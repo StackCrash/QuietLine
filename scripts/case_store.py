@@ -7,7 +7,10 @@ writes a new audit_log entry rather than mutating prior history.
 
 Idempotency guarantee: upsert() refuses to regress a 'confirmed-removed' case
 back to 'submitted' or any earlier status. This prevents re-submission of
-already-completed removals.
+already-completed removals. The sole exception is the Phase-5 monitoring
+transition 'confirmed-removed' -> 'reappeared' (a listing came back), which is
+allowed so the case can then be refiled ('reappeared' -> 'submitted') like a
+normal, non-terminal case.
 """
 
 import argparse
@@ -109,7 +112,10 @@ def upsert(record: dict) -> dict:
 
     if existing and existing.get("status") in TERMINAL_STATUSES:
         new_status = record.get("status", existing["status"])
-        if new_status != existing["status"]:
+        # Sole allowed transition out of a terminal status: a reappeared
+        # listing, so the monitoring flow can detect and refile it.
+        is_reappearance = existing["status"] == "confirmed-removed" and new_status == "reappeared"
+        if new_status != existing["status"] and not is_reappearance:
             print(
                 f"[idempotency] {broker_id} is already '{existing['status']}'; refusing to regress to '{new_status}'.",
                 file=sys.stderr,

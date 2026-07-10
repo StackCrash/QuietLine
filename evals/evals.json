@@ -1,5 +1,5 @@
 {
-  "description": "QuietLine eval harness \u2014 7 test cases covering correctness, idempotency, deadline logic, the SAFE-1 safety gate, the human-action queue, and confirmation-email classification.",
+  "description": "QuietLine eval harness \u2014 8 test cases covering correctness, idempotency, deadline logic, the SAFE-1 safety gate, the human-action queue, confirmation-email classification, and the reappeared/refile monitoring flow.",
   "schema_version": "1.0",
   "notes": "Run with: python evals/run_evals.py. Eval #5 (safety) is a hard gate \u2014 non-zero exit if it fails.",
   "evals": [
@@ -274,6 +274,52 @@
         {
           "description": "--apply on a temp store (seeded via upsert()) moves an already-confirmed case to confirmed-removed and a rejection case to failed",
           "check": "get('whitepages')['status'] == 'confirmed-removed' and get('spokeo')['status'] == 'failed'"
+        }
+      ],
+      "release_blocking": false
+    },
+    {
+      "id": "eval-08-monitoring-refile",
+      "name": "Monitoring refile: reappeared -> submitted",
+      "description": "Phase-5 monitoring flow: a confirmed-removed case whose listing reappears in a fresh scan can be marked 'reappeared' and then refiled ('reappeared' -> 'submitted'), while the idempotency guard still refuses a direct confirmed-removed -> submitted transition. Also regression-tests diff_scan.py's --case-store flag, which previously set QUIETLINE_CASE_STORE too late (after case_store.py had already bound its store path at import time).",
+      "script": "case_store.py, diff_scan.py",
+      "procedure": [
+        "seed case A and case B as 'confirmed-removed'; case C is never added to the store",
+        "build a fake scan containing A and C but not B; call diff_scan.diff()",
+        "assert: A in reappeared, C in new, B in still_clear",
+        "call mark(A, 'reappeared') -> assert status changes and an audit_log entry is appended",
+        "call mark(A, 'submitted') -> assert it succeeds (refile)",
+        "call mark(B, 'submitted') directly from confirmed-removed -> assert it is refused (status unchanged)",
+        "run diff_scan.py as a subprocess with --scan-file and --case-store pointing at the temp store -> assert the JSON output reflects that store"
+      ],
+      "assertions": [
+        {
+          "description": "diff() reports A (confirmed-removed, present in scan) as reappeared",
+          "check": "'whitepages' in diff_result['reappeared']"
+        },
+        {
+          "description": "diff() reports C (absent from store, present in scan) as new",
+          "check": "'infotracer' in diff_result['new']"
+        },
+        {
+          "description": "diff() reports B (confirmed-removed, absent from scan) as still_clear",
+          "check": "'spokeo' in diff_result['still_clear']"
+        },
+        {
+          "description": "mark(A, 'reappeared') changes the status and appends an audit_log entry",
+          "check": "mark('whitepages', 'reappeared')['status'] == 'reappeared' and len(audit_log) grew"
+        },
+        {
+          "description": "mark(A, 'submitted') succeeds after 'reappeared' (refile)",
+          "check": "mark('whitepages', 'submitted')['status'] == 'submitted'"
+        },
+        {
+          "description": "mark(B, 'submitted') directly from confirmed-removed is refused",
+          "check": "get('spokeo')['status'] == 'confirmed-removed'"
+        },
+        {
+          "description": "diff_scan.py --case-store subprocess output reflects the passed temp store, not the default",
+          "check": "'spokeo' in subprocess_result['still_clear'] and 'infotracer' in subprocess_result['new']"
         }
       ],
       "release_blocking": false

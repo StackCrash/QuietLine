@@ -17,7 +17,6 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-import case_store as cs
 
 
 def diff(new_scan: list) -> dict:
@@ -34,6 +33,12 @@ def diff(new_scan: list) -> dict:
             new: list of broker_ids not previously seen,
         }
     """
+    # LATE IMPORT (matches deadlines.py's / action_queue.py's main()):
+    # case_store.py fixes CASE_STORE_PATH from QUIETLINE_CASE_STORE at
+    # *import* time, so this import must happen here (after main() has set
+    # the env var from --case-store) rather than at module load time.
+    import case_store as cs  # noqa: PLC0415
+
     new_scan_ids = {row["id"] for row in new_scan}
     existing_cases = cs.list_cases()
     existing_by_id = {c["broker_id"]: c for c in existing_cases}

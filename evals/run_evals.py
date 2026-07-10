@@ -1,7 +1,7 @@
 """
 QuietLine eval harness runner.
 
-Executes the 7 test cases in evals.json against the actual scripts using
+Executes the 8 test cases in evals.json against the actual scripts using
 temporary case-store files so production data is never touched.
 
 Exit codes:
@@ -16,6 +16,7 @@ Usage:
 """
 
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -32,6 +33,7 @@ import case_store as cs_mod
 import deadlines as dl_mod
 import action_queue as aq_mod
 import confirmation as conf_mod
+import diff_scan as diff_mod
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
@@ -627,6 +629,138 @@ def run_eval_07_confirmation(verbose: bool) -> EvalResult:
     return result
 
 
+def _seed_monitoring_cases() -> None:
+    """Case A and case B both start confirmed-removed; case C is never added."""
+    cs_mod.upsert({"broker_id": "whitepages", "status": "discovered", "created_at": _now()})
+    cs_mod.mark("whitepages", "submitted")
+    cs_mod.mark("whitepages", "confirmed-removed")
+
+    cs_mod.upsert({"broker_id": "spokeo", "status": "discovered", "created_at": _now()})
+    cs_mod.mark("spokeo", "submitted")
+    cs_mod.mark("spokeo", "confirmed-removed")
+
+
+def _check_diff_and_refile(result: EvalResult, fake_scan: list, verbose: bool) -> None:
+    """diff() classification, then the reappeared -> submitted refile + guard."""
+    diff_result = diff_mod.diff(fake_scan)
+    if verbose:
+        print(f"  diff() -> {diff_result}")
+
+    if "whitepages" not in diff_result["reappeared"]:
+        result.fail("A (whitepages) appears in diff()'s reappeared", str(diff_result))
+    if "infotracer" not in diff_result["new"]:
+        result.fail("C (infotracer) appears in diff()'s new", str(diff_result))
+    if "spokeo" not in diff_result["still_clear"]:
+        result.fail("B (spokeo) appears in diff()'s still_clear", str(diff_result))
+
+    # mark(A, 'reappeared') succeeds: status changes and audit_log grows.
+    before = cs_mod.get("whitepages")
+    before_log_len = len(before["audit_log"]) if before else 0
+    reappeared_record = cs_mod.mark("whitepages", "reappeared")
+    if verbose:
+        print(f"  after mark(A, 'reappeared'): status={reappeared_record['status']}")
+    if reappeared_record["status"] != "reappeared":
+        result.fail(
+            "mark(A, 'reappeared') changes status to 'reappeared'",
+            f"got '{reappeared_record['status']}'",
+        )
+    if len(reappeared_record.get("audit_log", [])) <= before_log_len:
+        result.fail("mark(A, 'reappeared') appends an audit_log entry")
+
+    # mark(A, 'submitted') then succeeds (refile).
+    refiled_record = cs_mod.mark("whitepages", "submitted")
+    if verbose:
+        print(f"  after mark(A, 'submitted'): status={refiled_record['status']}")
+    if refiled_record["status"] != "submitted":
+        result.fail(
+            "mark(A, 'submitted') refiles the case after 'reappeared'",
+            f"got '{refiled_record['status']}'",
+        )
+
+    # mark(B, 'submitted') directly from confirmed-removed is still refused.
+    cs_mod.mark("spokeo", "submitted")
+    b_after = cs_mod.get("spokeo")
+    if b_after is None or b_after["status"] != "confirmed-removed":
+        result.fail(
+            "mark(B, 'submitted') direct from confirmed-removed is refused (guard still holds)",
+            f"got '{b_after['status'] if b_after else None}'",
+        )
+
+
+def _check_diff_scan_case_store_flag(
+    result: EvalResult, tmp_dir: str, store_path: str, fake_scan: list, verbose: bool
+) -> None:
+    """Regression test for Fix 2: --case-store must point the CLI at this temp store."""
+    scan_file = Path(tmp_dir) / "scan.json"
+    scan_file.write_text(json.dumps(fake_scan))
+    proc = subprocess.run(  # noqa: S603
+        [
+            sys.executable,
+            str(SCRIPTS_DIR / "diff_scan.py"),
+            "--scan-file",
+            str(scan_file),
+            "--case-store",
+            store_path,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if verbose:
+        print(f"  subprocess stdout:\n{proc.stdout}")
+        print(f"  subprocess stderr:\n{proc.stderr}")
+    if proc.returncode != 0:
+        result.fail("diff_scan.py --case-store subprocess exits 0", proc.stderr)
+
+    try:
+        subprocess_result = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        subprocess_result = {}
+        result.fail("diff_scan.py --case-store prints valid JSON to stdout", proc.stdout)
+
+    # By this point A (whitepages) has been refiled to 'submitted', so this
+    # scan should now report B (spokeo, still confirmed-removed and absent
+    # from the scan) as still_clear and C (infotracer) as new — values that
+    # could only come from *this* temp store, not the default.
+    if "spokeo" not in subprocess_result.get("still_clear", []):
+        result.fail(
+            "diff_scan.py --case-store reflects the passed store (spokeo in still_clear)",
+            str(subprocess_result),
+        )
+    if "infotracer" not in subprocess_result.get("new", []):
+        result.fail(
+            "diff_scan.py --case-store reflects the passed store (infotracer in new)",
+            str(subprocess_result),
+        )
+
+
+def run_eval_08_monitoring_refile(verbose: bool) -> EvalResult:
+    """
+    Phase-5 monitoring flow: confirmed-removed cases that reappear in a fresh
+    scan can be marked 'reappeared' and then refiled ('reappeared' ->
+    'submitted'), while the idempotency guard still refuses a direct
+    confirmed-removed -> submitted transition. Also regression-tests
+    diff_scan.py's --case-store flag (Fix 2: the env var must be set before
+    case_store is imported, not after).
+    """
+    result = EvalResult("eval-08", "Monitoring refile: reappeared -> submitted", release_blocking=False)
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        store_path = _tmpstore(tmp_dir)
+        os.environ["QUIETLINE_CASE_STORE"] = store_path
+        cs_mod.CASE_STORE_PATH = Path(store_path)
+
+        _seed_monitoring_cases()
+
+        # Fake scan (discovery-report-shaped rows): contains A and C, not B.
+        fake_scan = [{"id": "whitepages"}, {"id": "infotracer"}]
+
+        _check_diff_and_refile(result, fake_scan, verbose)
+        _check_diff_scan_case_store_flag(result, tmp_dir, store_path, fake_scan, verbose)
+
+    return result
+
+
 EVAL_RUNNERS = {
     "eval-01-discovery": run_eval_01_discovery,
     "eval-02-mechanism-routing": run_eval_02_mechanism_routing,
@@ -635,6 +769,7 @@ EVAL_RUNNERS = {
     "eval-05-safety-own-data-only": run_eval_05_safety,
     "eval-06-action-queue": run_eval_06_action_queue,
     "eval-07-confirmation-classification": run_eval_07_confirmation,
+    "eval-08-monitoring-refile": run_eval_08_monitoring_refile,
 }
 
 
