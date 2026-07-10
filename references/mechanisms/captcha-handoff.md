@@ -46,3 +46,7 @@ When the user confirms they submitted:
 | CAPTCHA loop doesn't resolve | Note in case store; user may need to try again later |
 | Form resets after CAPTCHA | Re-fill from scratch; note the issue |
 | No confirmation email | Re-queue for next human session |
+
+## Queueing
+
+Marking the case `awaiting-user` with a specific `human_action_required` string (as in step 6 above) is what makes it appear in the queue — `scripts/action_queue.py` reads the case store, not this file, to render the numbered list the user sees. Sections are ordered by mechanism rank, and `captcha-handoff` is always rendered first.

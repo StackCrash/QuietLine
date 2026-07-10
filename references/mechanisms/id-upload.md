@@ -75,3 +75,7 @@ When the user confirms submission:
 | Broker rejects redacted ID | Note in case store; some brokers require unredacted IDs — user decides whether to proceed |
 | Upload portal is broken | Try again later; note in case store; consider email escalation instead |
 | Broker asks for Social Security Number | Do not proceed; mark `failed` with note "broker requested SSN — declined"; advise user this is unusual and potentially a scam |
+
+## Queueing
+
+Marking the case `awaiting-user` with the `human_action_required` text from step 2 above is what puts it in the queue — `scripts/action_queue.py` renders the numbered list from the case store, not from this file. `id-upload` items rank third, after `captcha-handoff` and `phone-verification`.

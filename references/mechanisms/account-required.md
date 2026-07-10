@@ -46,3 +46,7 @@ When the user confirms deletion was requested:
 | Sign-up email goes to spam | Ask user to check spam/junk folder |
 | Broker only allows deletion by deleting the account entirely | Note this clearly; user may not want to lose account data |
 | Account creation fails (email already exists) | User may need to log into a prior account; note in case store |
+
+## Queueing
+
+Marking the case `awaiting-user` with the `human_action_required` string from step 4 above is what surfaces it — `scripts/action_queue.py` renders the numbered queue from the case store, not from this file. `account-required` items rank fourth, after `captcha-handoff`, `phone-verification`, and `id-upload`.

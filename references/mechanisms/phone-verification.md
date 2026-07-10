@@ -45,3 +45,7 @@ When the user confirms they entered the code and submitted:
 | Code expired before user could enter it | Request a fresh code; re-queue |
 | Broker calls the number (voice verification) | Walk the user through the voice flow; note it in case store |
 | Broker requires the number be active/reachable | Note in case store; if number is ported or inactive, deletion may still be possible via email escalation |
+
+## Queueing
+
+Marking the case `awaiting-user` with the specific `human_action_required` string from step 4 above is what surfaces it — `scripts/action_queue.py` renders the numbered queue from the case store, not from this file. `phone-verification` items rank second, right after any `captcha-handoff` items.

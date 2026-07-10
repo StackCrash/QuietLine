@@ -1,7 +1,7 @@
 """
 QuietLine eval harness runner.
 
-Executes the 5 test cases in evals.json against the actual scripts using
+Executes the 6 test cases in evals.json against the actual scripts using
 temporary case-store files so production data is never touched.
 
 Exit codes:
@@ -29,6 +29,7 @@ sys.path.insert(0, str(SCRIPTS_DIR))
 import discover as discover_mod
 import case_store as cs_mod
 import deadlines as dl_mod
+import action_queue as aq_mod
 
 
 def _tmpstore(tmp_dir: str) -> str:
@@ -352,12 +353,132 @@ def run_eval_05_safety(verbose: bool) -> EvalResult:
     return result
 
 
+def run_eval_06_action_queue(verbose: bool) -> EvalResult:
+    """
+    Action queue: owner-group collapse, mechanism-rank ordering, deterministic
+    numbering across repeated runs, and status-based selection.
+    """
+    result = EvalResult("eval-06", "Action queue: collapse, ranking, determinism", release_blocking=False)
+
+    brokers_data = aq_mod._load_brokers()
+    owner_groups = brokers_data.get("owner_groups", {})
+    # First group with >= 2 members, loaded dynamically — never hardcode a
+    # specific owner-group name here (data/brokers.json is expected to grow).
+    group_key, group = next((k, g) for k, g in owner_groups.items() if len(g.get("members", [])) >= 2)
+    member_a, member_b = group["members"][0], group["members"][1]
+
+    if verbose:
+        print(f"  using owner group '{group_key}' members {member_a!r}, {member_b!r}")
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        os.environ["QUIETLINE_CASE_STORE"] = _tmpstore(tmp_dir)
+        cs_mod.CASE_STORE_PATH = Path(_tmpstore(tmp_dir))
+
+        # Two cases in the same owner group -> must collapse to one item.
+        cs_mod.upsert(
+            {
+                "broker_id": member_a,
+                "status": "awaiting-user",
+                "created_at": _now(),
+                "human_action_required": f"Complete opt-out for {member_a}.",
+            }
+        )
+        cs_mod.upsert(
+            {
+                "broker_id": member_b,
+                "status": "awaiting-user",
+                "created_at": _now(),
+                "human_action_required": f"Complete opt-out for {member_b}.",
+            }
+        )
+
+        # A captcha case — must rank before phone-verification.
+        cs_mod.upsert(
+            {
+                "broker_id": "advancedbackgroundchecks",
+                "status": "awaiting-user",
+                "created_at": _now(),
+                "mechanism": "captcha-handoff",
+                "human_action_required": "Solve CAPTCHA and click Submit.",
+            }
+        )
+
+        # A phone-verification case.
+        cs_mod.upsert(
+            {
+                "broker_id": "411-com",
+                "status": "awaiting-user",
+                "created_at": _now(),
+                "mechanism": "phone-verification",
+                "human_action_required": "Enter the code sent to your phone.",
+            }
+        )
+
+        # Excluded: submitted-and-waiting, and terminal (confirmed-removed).
+        cs_mod.upsert({"broker_id": "whitepages", "status": "discovered", "created_at": _now()})
+        cs_mod.mark("whitepages", "submitted")
+
+        cs_mod.upsert({"broker_id": "infotracer", "status": "discovered", "created_at": _now()})
+        cs_mod.mark("infotracer", "submitted")
+        cs_mod.mark("infotracer", "confirmed-removed")
+
+        # Two independent runs against the unchanged store must be byte-identical.
+        items_1 = aq_mod.build_queue(cs_mod.list_cases(), brokers_data)
+        rendered_1 = aq_mod.render_markdown(items_1)
+        items_2 = aq_mod.build_queue(cs_mod.list_cases(), brokers_data)
+        rendered_2 = aq_mod.render_markdown(items_2)
+
+        if verbose:
+            print(rendered_1)
+
+        if rendered_1 != rendered_2:
+            result.fail("two consecutive runs on the same store produce byte-identical markdown")
+
+        covered_ids = {bid for item in items_1 for bid in item["covers"]}
+        if "whitepages" in covered_ids:
+            result.fail("submitted (waiting) case must not appear in the queue", "whitepages found")
+        if "infotracer" in covered_ids:
+            result.fail("confirmed-removed case must not appear in the queue", "infotracer found")
+
+        group_item = next(
+            (it for it in items_1 if {member_a, member_b}.issubset(set(it["covers"]))),
+            None,
+        )
+        if group_item is None:
+            result.fail(
+                f"owner-group cases ({member_a}, {member_b}) collapse into one queue item",
+                f"items covers: {[it['covers'] for it in items_1]}",
+            )
+
+        captcha_item = next((it for it in items_1 if "advancedbackgroundchecks" in it["covers"]), None)
+        phone_item = next((it for it in items_1 if "411-com" in it["covers"]), None)
+        if captcha_item is None or phone_item is None:
+            result.fail("both the captcha and phone-verification cases appear in the queue")
+        elif captcha_item["number"] >= phone_item["number"]:
+            result.fail(
+                "captcha item is numbered before the phone-verification item (mechanism ranking)",
+                f"captcha number={captcha_item['number']}, phone number={phone_item['number']}",
+            )
+
+    # Empty store -> friendly message, exit 0, no crash.
+    with tempfile.TemporaryDirectory() as tmp_dir2:
+        os.environ["QUIETLINE_CASE_STORE"] = _tmpstore(tmp_dir2)
+        cs_mod.CASE_STORE_PATH = Path(_tmpstore(tmp_dir2))
+        empty_items = aq_mod.build_queue(cs_mod.list_cases(), brokers_data)
+        empty_rendered = aq_mod.render_markdown(empty_items)
+        if "Nothing needs your attention" not in empty_rendered:
+            result.fail("empty queue renders a friendly message", empty_rendered[:200])
+
+    return result
+
+
 EVAL_RUNNERS = {
     "eval-01-discovery": run_eval_01_discovery,
     "eval-02-mechanism-routing": run_eval_02_mechanism_routing,
     "eval-03-idempotency": run_eval_03_idempotency,
     "eval-04-deadline-escalation": run_eval_04_deadlines,
     "eval-05-safety-own-data-only": run_eval_05_safety,
+    "eval-06-action-queue": run_eval_06_action_queue,
 }
 
 

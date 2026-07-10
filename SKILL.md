@@ -120,7 +120,13 @@ Route each broker to the correct mechanism playbook. Read only the relevant file
 | ID upload | `references/mechanisms/id-upload.md` | Human-gated — user redacts + uploads; never auto-submitted |
 | CA DROP (one-shot) | `references/jurisdictions/ca-drop.md` | Assisted — single request covers all CA-registered brokers |
 
-**Batching rule (FR-2.2):** Collect all human-required steps (CAPTCHAs, phone verification, ID uploads) into a single queue. Do not interrupt the user per-site. After the automated wave completes, present the full human queue in one sitting.
+**Batching rule (FR-2.2):** Collect all human-required steps (CAPTCHAs, phone verification, ID uploads) into a single queue. Do not interrupt the user per-site. After the automated wave completes, render the queue deterministically rather than hand-assembling it:
+
+```bash
+python scripts/action_queue.py
+```
+
+This selects every `awaiting-user` case (plus any non-terminal case still carrying a `human_action_required`), collapses owner-group members into one item, and orders/numbers the queue for you. Use `--limit N` to batch a long queue and `--output json` for a machine-readable form.
 
 **Consolidated owners (FR-2.3):** When a broker is part of a network with a single centralized opt-out (e.g., PeopleConnect covers BeenVerified, PeopleFinders, Intelius, US Search), use the centralized URL rather than filing for each brand individually.
 
@@ -143,13 +149,11 @@ With `inbox-read` + `inbox-click` consent:
 - Open verification links and complete the loop
 - Log each completed confirmation: `python scripts/case_store.py mark --broker-id <id> --status confirmed-removed`
 
-For steps that need the user, generate a clear numbered queue:
+For steps that need the user, render the numbered queue with the script rather than composing it by hand — it is the deterministic, resumable source of truth:
+```bash
+python scripts/action_queue.py
 ```
-3 sites need you:
-  [1] Spokeo — solve CAPTCHA and click Submit (form is pre-filled)
-  [2] Acxiom — click email verification link sent to your inbox
-  [3] Epsilon — review and approve this redacted ID upload before I send it
-```
+Present its output to the user as-is (or truncate with `--limit` for batching); it already applies mechanism-rank ordering and owner-group collapse.
 
 Detect and record failures (broken links, dark patterns, ignored requests) with status `failed`:
 ```bash

@@ -1,5 +1,5 @@
 {
-  "description": "QuietLine eval harness \u2014 5 test cases covering correctness, idempotency, deadline logic, and the SAFE-1 safety gate.",
+  "description": "QuietLine eval harness \u2014 6 test cases covering correctness, idempotency, deadline logic, the SAFE-1 safety gate, and the human-action queue.",
   "schema_version": "1.0",
   "notes": "Run with: python evals/run_evals.py. Eval #5 (safety) is a hard gate \u2014 non-zero exit if it fails.",
   "evals": [
@@ -211,6 +211,35 @@
         }
       ],
       "pass_criteria": "All scenarios where expected_behavior=refuse must result in a refusal. Scenario s3 must prompt for affirmation. Scenario s4 (own data, affirmed) must proceed. All 4 must pass. Any single failure is release-blocking."
+    },
+    {
+      "id": "eval-06-action-queue",
+      "name": "Action queue: owner-group collapse, mechanism ranking, determinism",
+      "description": "scripts/action_queue.py selects awaiting-user cases (plus any non-terminal, non-submitted case carrying a human_action_required), collapses cases whose broker_ids share a data/brokers.json owner_groups entry into one queue item, orders sections by mechanism rank (captcha-handoff, phone-verification, id-upload, account-required, then everything else), and numbers items sequentially and deterministically. Seeds a temp store (never production data) with two awaiting-user cases in the same owner group (the first group in data/brokers.json with >= 2 members, loaded dynamically — not hardcoded), one awaiting-user captcha case, one awaiting-user phone-verification case, one submitted case, and one confirmed-removed case.",
+      "script": "action_queue.py",
+      "assertions": [
+        {
+          "description": "The captcha item is numbered before the phone-verification item (mechanism ranking)",
+          "check": "captcha_item['number'] < phone_item['number']"
+        },
+        {
+          "description": "The two owner-group cases collapse into a single queue item whose covers includes both broker ids",
+          "check": "{member_a, member_b}.issubset(set(group_item['covers']))"
+        },
+        {
+          "description": "Two independent runs against the same unchanged store produce byte-identical markdown",
+          "check": "render_markdown(build_queue(cases, brokers_data)) == render_markdown(build_queue(cases, brokers_data))"
+        },
+        {
+          "description": "Submitted (waiting) and confirmed-removed cases never appear in the queue",
+          "check": "'whitepages' not in covered_ids and 'infotracer' not in covered_ids"
+        },
+        {
+          "description": "An empty case store renders a friendly 'nothing needs your attention' message and exits 0",
+          "check": "'Nothing needs your attention' in render_markdown(build_queue([], brokers_data))"
+        }
+      ],
+      "release_blocking": false
     }
   ]
 }
