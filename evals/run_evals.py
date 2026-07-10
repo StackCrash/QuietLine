@@ -734,6 +734,107 @@ def _check_diff_scan_case_store_flag(
         )
 
 
+def _seed_rescan_store(name: str = "Jane Test", phone: str = "+15551234567", state: str = "CA") -> None:
+    """
+    Profile + a single confirmed-removed case, for the rescan.py --apply
+    subprocess check. whitepages is standalone, publicly_searchable, and
+    present in every discover() report (see eval-01/02), so a fresh scan is
+    guaranteed to contain it (-> reappeared) plus plenty of ids the store
+    has never seen (-> new).
+    """
+    cs_mod.init_profile({"name": name, "phone": phone, "state": state})
+    cs_mod.upsert({"broker_id": "whitepages", "status": "discovered", "created_at": _now()})
+    cs_mod.mark("whitepages", "submitted")
+    cs_mod.mark("whitepages", "confirmed-removed")
+
+
+def _run_rescan_apply(case_store: str) -> subprocess.CompletedProcess:
+    # Fixed, hardcoded argv (interpreter path + this repo's own script + a
+    # temp case-store path) — nothing here originates from untrusted input,
+    # unlike the generic bandit S603 concern.
+    return subprocess.run(  # noqa: S603
+        [
+            sys.executable,
+            str(SCRIPTS_DIR / "rescan.py"),
+            "--apply",
+            "--dry-run",
+            "--case-store",
+            case_store,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def _check_rescan_apply(result: EvalResult, verbose: bool) -> None:
+    """
+    scripts/rescan.py --apply, run as a subprocess against a freshly seeded
+    store (profile + one confirmed-removed, publicly-searchable case). No
+    --name/--phone/--state flags are passed, so this also exercises
+    rescan.py's stored-profile fallback.
+    """
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        store_path = _tmpstore(tmp_dir)
+        os.environ["QUIETLINE_CASE_STORE"] = store_path
+        cs_mod.CASE_STORE_PATH = Path(store_path)
+
+        _seed_rescan_store()
+
+        proc = _run_rescan_apply(store_path)
+        if verbose:
+            print(f"  rescan.py --apply stdout:\n{proc.stdout}")
+            print(f"  rescan.py --apply stderr:\n{proc.stderr}")
+        if proc.returncode != 0:
+            result.fail("rescan.py --apply subprocess exits 0", proc.stderr)
+
+        try:
+            rescan_result = json.loads(proc.stdout)
+        except json.JSONDecodeError:
+            rescan_result = {}
+            result.fail("rescan.py --apply prints valid JSON to stdout", proc.stdout)
+
+        if "whitepages" not in rescan_result.get("reappeared", []):
+            result.fail(
+                "rescan.py --apply's JSON reports the seeded case as reappeared",
+                str(rescan_result),
+            )
+
+        # The subprocess wrote through its own process-local case_store
+        # import, bound to the same file this process has patched
+        # CASE_STORE_PATH to — re-reading here reflects what it wrote.
+        after = cs_mod.get("whitepages")
+        if after is None or after["status"] != "reappeared":
+            result.fail(
+                "rescan.py --apply marks the seeded confirmed-removed case 'reappeared'",
+                f"got {after.get('status') if after else None}",
+            )
+
+        all_cases = cs_mod.list_cases()
+        new_discovered = [c for c in all_cases if c.get("status") == "discovered"]
+        if not new_discovered:
+            result.fail("rescan.py --apply registers at least one new case as 'discovered'", str(all_cases))
+
+        store = cs_mod._load_store()
+        last_scan_date = store.get("last_scan_date")
+        next_scan_date = store.get("next_scan_date")
+        if verbose:
+            print(f"  last_scan_date={last_scan_date} next_scan_date={next_scan_date}")
+
+        if not last_scan_date:
+            result.fail("rescan.py --apply writes store['last_scan_date'] (read by build_dashboard.py)", str(store))
+        if not next_scan_date:
+            result.fail("rescan.py --apply writes store['next_scan_date'] (read by build_dashboard.py)", str(store))
+
+        if last_scan_date and next_scan_date:
+            delta_days = (datetime.fromisoformat(next_scan_date) - datetime.fromisoformat(last_scan_date)).days
+            if not (85 <= delta_days <= 95):
+                result.fail(
+                    "next_scan_date is ~90 days after last_scan_date",
+                    f"got a {delta_days}-day delta",
+                )
+
+
 def run_eval_08_monitoring_refile(verbose: bool) -> EvalResult:
     """
     Phase-5 monitoring flow: confirmed-removed cases that reappear in a fresh
@@ -741,7 +842,9 @@ def run_eval_08_monitoring_refile(verbose: bool) -> EvalResult:
     'submitted'), while the idempotency guard still refuses a direct
     confirmed-removed -> submitted transition. Also regression-tests
     diff_scan.py's --case-store flag (Fix 2: the env var must be set before
-    case_store is imported, not after).
+    case_store is imported, not after), and scripts/rescan.py --apply end to
+    end: reappeared/new classification, the case-store writes, and the
+    last_scan_date/next_scan_date pair build_dashboard.py reads.
     """
     result = EvalResult("eval-08", "Monitoring refile: reappeared -> submitted", release_blocking=False)
 
@@ -757,6 +860,8 @@ def run_eval_08_monitoring_refile(verbose: bool) -> EvalResult:
 
         _check_diff_and_refile(result, fake_scan, verbose)
         _check_diff_scan_case_store_flag(result, tmp_dir, store_path, fake_scan, verbose)
+
+    _check_rescan_apply(result, verbose)
 
     return result
 

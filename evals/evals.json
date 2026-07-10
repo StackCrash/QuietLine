@@ -1,5 +1,5 @@
 {
-  "description": "QuietLine eval harness \u2014 8 test cases covering correctness, idempotency, deadline logic, the SAFE-1 safety gate, the human-action queue, confirmation-email classification, and the reappeared/refile monitoring flow.",
+  "description": "QuietLine eval harness \u2014 8 test cases covering correctness, idempotency, deadline logic, the SAFE-1 safety gate, the human-action queue, confirmation-email classification, and the reappeared/refile monitoring flow (including the rescan.py --apply orchestration end to end).",
   "schema_version": "1.0",
   "notes": "Run with: python evals/run_evals.py. Eval #5 (safety) is a hard gate \u2014 non-zero exit if it fails.",
   "evals": [
@@ -281,8 +281,8 @@
     {
       "id": "eval-08-monitoring-refile",
       "name": "Monitoring refile: reappeared -> submitted",
-      "description": "Phase-5 monitoring flow: a confirmed-removed case whose listing reappears in a fresh scan can be marked 'reappeared' and then refiled ('reappeared' -> 'submitted'), while the idempotency guard still refuses a direct confirmed-removed -> submitted transition. Also regression-tests diff_scan.py's --case-store flag, which previously set QUIETLINE_CASE_STORE too late (after case_store.py had already bound its store path at import time).",
-      "script": "case_store.py, diff_scan.py",
+      "description": "Phase-5 monitoring flow: a confirmed-removed case whose listing reappears in a fresh scan can be marked 'reappeared' and then refiled ('reappeared' -> 'submitted'), while the idempotency guard still refuses a direct confirmed-removed -> submitted transition. Also regression-tests diff_scan.py's --case-store flag, which previously set QUIETLINE_CASE_STORE too late (after case_store.py had already bound its store path at import time). Finally, runs scripts/rescan.py --apply end to end as a subprocess against a freshly seeded store (a profile plus one confirmed-removed, publicly-searchable case): asserts the seeded case is reported as reappeared and moved to status 'reappeared', at least one previously-unseen broker is registered as 'discovered', and the store's last_scan_date/next_scan_date (the exact keys build_dashboard.py reads) are written with next_scan_date approximately 90 days after last_scan_date.",
+      "script": "case_store.py, diff_scan.py, rescan.py",
       "procedure": [
         "seed case A and case B as 'confirmed-removed'; case C is never added to the store",
         "build a fake scan containing A and C but not B; call diff_scan.diff()",
@@ -290,7 +290,9 @@
         "call mark(A, 'reappeared') -> assert status changes and an audit_log entry is appended",
         "call mark(A, 'submitted') -> assert it succeeds (refile)",
         "call mark(B, 'submitted') directly from confirmed-removed -> assert it is refused (status unchanged)",
-        "run diff_scan.py as a subprocess with --scan-file and --case-store pointing at the temp store -> assert the JSON output reflects that store"
+        "run diff_scan.py as a subprocess with --scan-file and --case-store pointing at the temp store -> assert the JSON output reflects that store",
+        "seed a fresh temp store with a profile and one confirmed-removed, publicly-searchable case (whitepages); run 'rescan.py --apply --dry-run --case-store <tmp>' as a subprocess with no --name/--phone/--state flags (exercising the stored-profile fallback)",
+        "assert: the seeded case's status becomes 'reappeared'; at least one new broker is registered as 'discovered'; store['last_scan_date'] and store['next_scan_date'] are written, ~90 days apart"
       ],
       "assertions": [
         {
@@ -320,6 +322,18 @@
         {
           "description": "diff_scan.py --case-store subprocess output reflects the passed temp store, not the default",
           "check": "'spokeo' in subprocess_result['still_clear'] and 'infotracer' in subprocess_result['new']"
+        },
+        {
+          "description": "rescan.py --apply's JSON reports the seeded case as reappeared, and case_store reflects the same after the run",
+          "check": "'whitepages' in rescan_result['reappeared'] and get('whitepages')['status'] == 'reappeared'"
+        },
+        {
+          "description": "rescan.py --apply registers at least one previously-unseen broker as 'discovered'",
+          "check": "any(c['status'] == 'discovered' for c in list_cases())"
+        },
+        {
+          "description": "rescan.py --apply writes last_scan_date/next_scan_date at the store keys build_dashboard.py reads, ~90 days apart",
+          "check": "store['last_scan_date'] and store['next_scan_date'] and 85 <= (next_scan_date - last_scan_date).days <= 95"
         }
       ],
       "release_blocking": false

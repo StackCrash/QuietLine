@@ -190,16 +190,15 @@ Valid case statuses: `discovered` → `submitted` → `awaiting-confirmation` �
 
 ## Phase 5 — Monitoring & Re-Removal
 
-Re-run discovery on the 90-day schedule (or user-triggered) and diff against the last run:
+On the 90-day schedule (or user-triggered), run discovery, diff against the last run, and refile in one step:
 ```bash
-python scripts/discover.py --name "Full Name" --phone "+15551234567" --state CA
-python scripts/diff_scan.py
+python scripts/rescan.py --apply
 ```
 
-`diff_scan.py` outputs `{still_clear, reappeared, new}`. For reappeared or new brokers, re-enter Phase 2 for those entries only.
+Identity is read from the stored profile automatically. `rescan.py` prints the diff (`{still_clear, reappeared, new}` plus scan metadata) to stdout and a human summary to stderr; `--apply` marks each `reappeared` broker for refiling, registers each `new` broker as `discovered`, and records `last_scan_date`/`next_scan_date` for the dashboard. Omit `--apply` for a read-only preview. For reappeared or new brokers, re-enter Phase 2 for those entries only.
 
-Send the user a concise periodic summary:
-> X still clear · Y reappeared and re-filed · Z new sites found · 2 need your action
+Send the user rescan.py's concise periodic summary:
+> X still clear · Y reappeared · Z new · N need action
 
 ---
 
