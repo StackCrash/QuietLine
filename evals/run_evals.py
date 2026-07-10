@@ -64,10 +64,12 @@ def run_eval_01_discovery(verbose: bool) -> EvalResult:
     Discovery correctness and owner deduplication.
 
     Deliberately registry-size independent: data/brokers.json is a growing
-    registry (currently a handful of seed brokers, headed toward ~50), so this
-    eval asserts behavior — required row shape, unique ids, and owner-group
-    dedup computed dynamically from data/brokers.json — rather than an exact
-    entry count or a hardcoded owner-group name.
+    registry (now consolidated to ~50 entries), so this eval asserts behavior
+    — required row shape, unique ids, and owner-group dedup computed
+    dynamically from data/brokers.json — rather than an exact entry count or
+    a hardcoded owner-group name. The floors below are raised to reflect the
+    consolidated registry size, but remain floors (not exact counts) so the
+    registry can keep growing without needing this eval edited again.
     """
     result = EvalResult("eval-01", "Discovery correctness + owner dedup", release_blocking=False)
 
@@ -78,10 +80,17 @@ def run_eval_01_discovery(verbose: bool) -> EvalResult:
         for r in report:
             print(f"    {r['id']} | consolidated={r.get('consolidated')} | covers={r.get('covers', [])}")
 
-    # Floor, not an exact count — the registry is expected to grow well past
-    # its current seed size.
-    if len(report) < 5:
-        result.fail("len(report) >= 5", f"got {len(report)}")
+    # Floor, not an exact count — the registry is expected to keep growing
+    # past its current consolidated size.
+    if len(report) < 25:
+        result.fail("len(report) >= 25 for a CA user", f"got {len(report)}")
+
+    consolidated_rows = [r for r in report if r.get("consolidated")]
+    if len(consolidated_rows) < 2:
+        result.fail(
+            "at least 2 distinct consolidated (owner-group) rows in the report",
+            f"got {len(consolidated_rows)}: {[r['id'] for r in consolidated_rows]}",
+        )
 
     required_keys = {
         "id",
@@ -108,6 +117,12 @@ def run_eval_01_discovery(verbose: bool) -> EvalResult:
     # actually contains — never hardcode a specific owner-group name here.
     data = discover_mod._load_brokers()
     owner_groups = data.get("owner_groups", {})
+
+    # Floor, not an exact count — data/brokers.json is expected to keep
+    # growing past its current consolidated size.
+    if len(data.get("brokers", [])) < 45:
+        result.fail("data/brokers.json has >= 45 broker entries", f"got {len(data.get('brokers', []))}")
+
     searchable_ids = {b["id"] for b in data["brokers"] if b.get("publicly_searchable")}
     by_id = {r["id"]: r for r in report}
 

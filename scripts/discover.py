@@ -51,8 +51,11 @@ def _dedupe_by_owner(brokers: list, owner_groups: dict) -> list:
                 group = owner_groups[matched_group_key]
                 seen_owners[matched_group_key] = {
                     "id": matched_group_key,
-                    "name": group["display_name"],
-                    "opt_out_url": group["centralized_opt_out_url"],
+                    "name": group.get("display_name", matched_group_key),
+                    # Not every owner group has a single centralized opt-out
+                    # (e.g. loosely-affiliated clone-site networks) — fall
+                    # back to None rather than crashing on a missing key.
+                    "opt_out_url": group.get("centralized_opt_out_url"),
                     "mechanism_type": "web-form",
                     "difficulty": "easy",
                     "covers": group["members"],
