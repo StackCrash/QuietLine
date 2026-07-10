@@ -1,5 +1,5 @@
 {
-  "description": "QuietLine eval harness \u2014 9 test cases covering correctness, idempotency, deadline logic, the SAFE-1 safety gate, the human-action queue, confirmation-email classification, the reappeared/refile monitoring flow (including the rescan.py --apply orchestration end to end), and email-template rendering across jurisdictions.",
+  "description": "QuietLine eval harness \u2014 10 test cases covering correctness, idempotency, deadline logic, the SAFE-1 safety gate, the human-action queue, confirmation-email classification, the reappeared/refile monitoring flow (including the rescan.py --apply orchestration end to end), email-template rendering across jurisdictions, and offline privacy-link extraction from broker homepage HTML.",
   "schema_version": "1.0",
   "notes": "Run with: python evals/run_evals.py. Eval #5 (safety) is a hard gate \u2014 non-zero exit if it fails.",
   "evals": [
@@ -371,6 +371,47 @@
         {
           "description": "Rendering succeeds for an owner-group member broker id (intelius, a peopleconnect member) with a non-empty subject and no unresolved placeholders",
           "check": "render('deletion', 'intelius', 'CA', ...)['subject'].strip() != '' and re.search(r'\\{\\w+\\}', body) is None"
+        }
+      ],
+      "release_blocking": false
+    },
+    {
+      "id": "eval-10-privacy-link-extraction",
+      "name": "Privacy link extraction: visible-text matching (offline)",
+      "description": "scripts/verify_url.py's LinkExtractor tracks open-<a> state across handle_starttag/handle_data/handle_endtag so a footer link's VISIBLE TEXT (not just its href or title attribute) can match PRIVACY_LINK_PATTERNS — fixing the prior behavior where handle_data was a no-op and an anchor like <a href=\"/s/x9\">Do Not Sell My Personal Information</a> was missed entirely because the opaque href and empty title never matched. extract_links(html) and match_privacy_links(links) are pure, offline functions (no network) exercised directly against synthetic HTML fixtures. Covers: an opaque href matched only via visible text; an anchor matched only via its title attribute (regression: the old behavior must still work); a matching phrase split across nested tags inside the anchor (<a href=\"/p\"><span>Privacy</span> Choices</a>); irrelevant anchors that must not match; and malformed HTML (an anchor closed early by a stray </a>, plus a dangling never-closed anchor) that must not raise.",
+      "script": "verify_url.py",
+      "assertions": [
+        {
+          "description": "extract_links returns one (href, text) pair per anchor, in document order",
+          "check": "extract_links(html) == [('/s/x9', ...), ('/legal/notice', ...), ('/p', ...), ('/about', ...), ('/careers', ...)]"
+        },
+        {
+          "description": "extract_links captures an anchor's visible text, not just its href/title",
+          "check": "'sell' in dict(extract_links(html))['/s/x9'].lower()"
+        },
+        {
+          "description": "extract_links accumulates text across nested tags inside an anchor (e.g. <span>)",
+          "check": "'privacy' in dict(extract_links(html))['/p'].lower() and 'choices' in dict(extract_links(html))['/p'].lower()"
+        },
+        {
+          "description": "An opaque href matched only via visible text ('Do Not Sell My Personal Information') is matched",
+          "check": "'/s/x9' in match_privacy_links(extract_links(html))"
+        },
+        {
+          "description": "An anchor matched only via its title attribute ('Privacy Policy') still matches (regression)",
+          "check": "'/legal/notice' in match_privacy_links(extract_links(html))"
+        },
+        {
+          "description": "An anchor whose matching phrase is split across nested tags matches",
+          "check": "'/p' in match_privacy_links(extract_links(html))"
+        },
+        {
+          "description": "Irrelevant anchors (About Us, Careers) are not matched",
+          "check": "'/about' not in match_privacy_links(extract_links(html)) and '/careers' not in match_privacy_links(extract_links(html))"
+        },
+        {
+          "description": "extract_links/match_privacy_links never raise on malformed HTML (unclosed anchor, stray closing tag)",
+          "check": "no exception raised"
         }
       ],
       "release_blocking": false

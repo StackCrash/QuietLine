@@ -13,6 +13,7 @@ import argparse
 import json
 import sys
 from datetime import datetime, timezone
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urljoin
@@ -57,42 +58,90 @@ def _check_url(url: str) -> tuple[bool, int]:
         return False, 0
 
 
+class LinkExtractor(HTMLParser):
+    """
+    Collects (href, combined-text) pairs for every <a> tag in an HTML
+    document. "combined-text" is the anchor's visible text (accumulated
+    across any nested tags, e.g. <a href="/p"><span>Privacy</span> Choices</a>)
+    plus its `title` attribute, since brokers put the matching phrase in
+    either place.
+
+    Tolerant of malformed markup (unclosed anchors, stray end tags) because
+    html.parser.HTMLParser itself never raises on malformed HTML — an anchor
+    that's never closed simply never gets finalized into self.links.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.links: list[tuple[str, str]] = []
+        self._in_anchor: bool = False
+        self._current_href: str = ""
+        self._current_title: str = ""
+        self._current_text_parts: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, Optional[str]]]) -> None:
+        if tag == "a":
+            attrs_dict = dict(attrs)
+            self._in_anchor = True
+            self._current_href = attrs_dict.get("href") or ""
+            self._current_title = attrs_dict.get("title") or ""
+            self._current_text_parts = []
+
+    def handle_data(self, data: str) -> None:
+        if self._in_anchor:
+            self._current_text_parts.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "a" and self._in_anchor:
+            visible_text = "".join(self._current_text_parts).strip()
+            combined = f"{visible_text} {self._current_title}".strip()
+            self.links.append((self._current_href, combined))
+            self._in_anchor = False
+            self._current_href = ""
+            self._current_title = ""
+            self._current_text_parts = []
+
+
+def extract_links(html: str) -> list[tuple[str, str]]:
+    """
+    Parse an HTML document and return (href, text) pairs for every anchor,
+    where `text` combines the anchor's visible text with its `title`
+    attribute. Pure and offline — no network, no filesystem.
+    """
+    parser = LinkExtractor()
+    parser.feed(html)
+    return parser.links
+
+
+def match_privacy_links(links: list[tuple[str, str]]) -> list[str]:
+    """
+    Filter (href, text) pairs down to hrefs whose href or text matches one of
+    PRIVACY_LINK_PATTERNS. Order-preserving; pure and offline.
+    """
+    matched = []
+    for href, text in links:
+        combined = f"{href} {text}".lower()
+        if any(pat in combined for pat in PRIVACY_LINK_PATTERNS):
+            matched.append(href)
+    return matched
+
+
 def _find_privacy_link(homepage: str) -> Optional[str]:
     """
     Fetch the broker homepage and scan for a privacy / opt-out footer link.
     Returns the resolved URL if found, None otherwise.
     """
     try:
-        from html.parser import HTMLParser  # noqa: PLC0415
-
         import requests  # noqa: PLC0415
 
-        class LinkExtractor(HTMLParser):
-            def __init__(self):
-                super().__init__()
-                self.links: list[tuple[str, str]] = []
-
-            def handle_starttag(self, tag, attrs):
-                if tag == "a":
-                    attrs_dict = dict(attrs)
-                    href = attrs_dict.get("href", "")
-                    text = attrs_dict.get("title", "")
-                    self.links.append((href, text))
-
-            def handle_data(self, data):
-                pass
-
         resp = requests.get(homepage, timeout=TIMEOUT_SECONDS)
-        parser = LinkExtractor()
-        parser.feed(resp.text)
+        links = extract_links(resp.text)
 
-        for href, title in parser.links:
-            combined = (href + " " + title).lower()
-            if any(pat in combined for pat in PRIVACY_LINK_PATTERNS):
-                resolved = urljoin(homepage, href)
-                live, _ = _check_url(resolved)
-                if live:
-                    return resolved
+        for href in match_privacy_links(links):
+            resolved = urljoin(homepage, href)
+            live, _ = _check_url(resolved)
+            if live:
+                return resolved
     # Best-effort fallback: any failure here just means "no privacy link found".
     except Exception:  # noqa: S110  # nosec B110
         pass

@@ -1,7 +1,7 @@
 """
 QuietLine eval harness runner.
 
-Executes the 8 test cases in evals.json against the actual scripts using
+Executes the test cases in evals.json against the actual scripts using
 temporary case-store files so production data is never touched.
 
 Exit codes:
@@ -36,6 +36,7 @@ import action_queue as aq_mod
 import confirmation as conf_mod
 import diff_scan as diff_mod
 import render_email as render_mod
+import verify_url as verify_url_mod
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
@@ -1172,6 +1173,100 @@ def run_eval_09_email_rendering(verbose: bool) -> EvalResult:
     return result
 
 
+def run_eval_10_privacy_link_extraction(verbose: bool) -> EvalResult:
+    """
+    scripts/verify_url.py's LinkExtractor/extract_links/match_privacy_links,
+    exercised entirely offline against synthetic HTML fixtures (no network
+    calls anywhere in this eval).
+
+    Covers: an opaque href whose match signal lives only in the anchor's
+    visible text (the bug this refactor fixes — handle_data used to be a
+    no-op); a title-attribute-only match (regression: the old behavior must
+    still work); a phrase split across nested tags inside the anchor;
+    irrelevant anchors that must not match; and malformed HTML (an anchor
+    that's never closed, plus a stray closing tag) that must not raise.
+    """
+    result = EvalResult("eval-10", "Privacy link extraction: visible-text matching (offline)", release_blocking=False)
+
+    html = """
+    <html><body>
+    <footer>
+    <a href="/s/x9">Do Not Sell My Personal Information</a>
+    <a href="/legal/notice" title="Privacy Policy">Legal</a>
+    <a href="/p"><span>Privacy</span> Choices</a>
+    <a href="/about">About Us</a>
+    <a href="/careers">Careers</a>
+    </footer>
+    </body></html>
+    """
+
+    links = verify_url_mod.extract_links(html)
+    if verbose:
+        print(f"  extract_links -> {links}")
+
+    if len(links) != 5:
+        result.fail("extract_links returns one (href, text) pair per anchor", f"got {len(links)}: {links}")
+
+    hrefs = [href for href, _ in links]
+    if hrefs != ["/s/x9", "/legal/notice", "/p", "/about", "/careers"]:
+        result.fail("extract_links preserves document order of hrefs", str(hrefs))
+
+    by_href = dict(links)
+    if "sell" not in by_href.get("/s/x9", "").lower():
+        result.fail(
+            "extract_links captures visible anchor text (not just href/title)",
+            f"got text for /s/x9: {by_href.get('/s/x9')!r}",
+        )
+    if "privacy" not in by_href.get("/p", "").lower() or "choices" not in by_href.get("/p", "").lower():
+        result.fail(
+            "extract_links accumulates text across nested tags inside an anchor (e.g. <span>)",
+            f"got text for /p: {by_href.get('/p')!r}",
+        )
+
+    matched = verify_url_mod.match_privacy_links(links)
+    if verbose:
+        print(f"  match_privacy_links -> {matched}")
+
+    if "/s/x9" not in matched:
+        result.fail(
+            "opaque href with matching visible text ('Do Not Sell My Personal Information') is matched",
+            str(matched),
+        )
+    if "/legal/notice" not in matched:
+        result.fail(
+            "anchor matched via title attribute alone ('Privacy Policy') still matches (regression)",
+            str(matched),
+        )
+    if "/p" not in matched:
+        result.fail(
+            "anchor whose matching phrase is split across nested tags (<span>Privacy</span> Choices) matches",
+            str(matched),
+        )
+    if "/about" in matched or "/careers" in matched:
+        result.fail("irrelevant anchors (About Us, Careers) are not matched", str(matched))
+
+    # Malformed HTML: an anchor that's never properly closed (a stray </a>
+    # closes it early, mid-document), followed by a normal anchor. Must not
+    # raise, regardless of exactly what text ends up attributed to what.
+    malformed_html = """
+    <div><a href="/unclosed">Do Not Sell (never closed)
+    <p>Some paragraph</p>
+    </div>
+    </a>
+    <a href="/ok">Privacy</a>
+    <a href="/dangling">Dangling start with no close
+    """
+    try:
+        malformed_links = verify_url_mod.extract_links(malformed_html)
+        verify_url_mod.match_privacy_links(malformed_links)
+        if verbose:
+            print(f"  malformed_links -> {malformed_links}")
+    except Exception as e:  # noqa: BLE001 - intentionally broad: must not raise, of any kind
+        result.fail("extract_links/match_privacy_links never raise on malformed HTML", repr(e))
+
+    return result
+
+
 EVAL_RUNNERS = {
     "eval-01-discovery": run_eval_01_discovery,
     "eval-02-mechanism-routing": run_eval_02_mechanism_routing,
@@ -1182,6 +1277,7 @@ EVAL_RUNNERS = {
     "eval-07-confirmation-classification": run_eval_07_confirmation,
     "eval-08-monitoring-refile": run_eval_08_monitoring_refile,
     "eval-09-email-rendering": run_eval_09_email_rendering,
+    "eval-10-privacy-link-extraction": run_eval_10_privacy_link_extraction,
 }
 
 
