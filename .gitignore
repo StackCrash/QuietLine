@@ -45,5 +45,6 @@ Thumbs.db
 cases/
 cases.json
 
-# Packaged skill output
+# Packaged skill output (scripts/package_skill.py default --output dir is
+# dist/, already ignored above; *.skill covers other output locations too)
 *.skill

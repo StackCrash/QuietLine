@@ -150,9 +150,12 @@ GitHub Release.
    files (`.github/`, `pyproject.toml`, `uv.lock`, `CLAUDE.md`, `evals/`, `__pycache__/`,
    `.venv/`) — and attaches it to a GitHub Release for that tag.
 
-To dry-run the packaging step locally, zip the same include-list the workflow uses (see
-`.github/workflows/release.yml` for the exact file list — keep the two in sync if either
-changes).
+`scripts/package_skill.py` is the single source of truth for the include-list and zip
+layout — both the release workflow and the local dry-run call it, so they can't drift.
+To dry-run the packaging step locally: `uv run python scripts/package_skill.py` (writes to
+`dist/quietline.skill` by default; pass `--output PATH` to write elsewhere). If the payload
+contents ever need to change, edit `INCLUDE` in `scripts/package_skill.py` — don't touch
+release.yml directly.
 
 ## CI/CD (GitHub Actions)
 
