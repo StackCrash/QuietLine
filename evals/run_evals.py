@@ -60,7 +60,15 @@ class EvalResult:
 
 
 def run_eval_01_discovery(verbose: bool) -> EvalResult:
-    """Discovery correctness and owner deduplication."""
+    """
+    Discovery correctness and owner deduplication.
+
+    Deliberately registry-size independent: data/brokers.json is a growing
+    registry (currently a handful of seed brokers, headed toward ~50), so this
+    eval asserts behavior — required row shape, unique ids, and owner-group
+    dedup computed dynamically from data/brokers.json — rather than an exact
+    entry count or a hardcoded owner-group name.
+    """
     result = EvalResult("eval-01", "Discovery correctness + owner dedup", release_blocking=False)
 
     report = discover_mod.discover(name="Jane Test", phone="+15551234567", state="CA", dry_run=True)
@@ -70,14 +78,65 @@ def run_eval_01_discovery(verbose: bool) -> EvalResult:
         for r in report:
             print(f"    {r['id']} | consolidated={r.get('consolidated')} | covers={r.get('covers', [])}")
 
-    # 5 seed brokers → 5 entries: 4 standalone (whitepages, spokeo, radaris, infotracer)
-    # + 1 consolidated group (peopleconnect replacing beenverified). Total = 5.
-    if len(report) != 5:
-        result.fail("len(report) == 5", f"got {len(report)}")
+    # Floor, not an exact count — the registry is expected to grow well past
+    # its current seed size.
+    if len(report) < 5:
+        result.fail("len(report) >= 5", f"got {len(report)}")
 
-    if not any(e.get("consolidated") and "beenverified" in e.get("covers", []) for e in report):
-        result.fail("PeopleConnect consolidated entry with beenverified in covers")
+    required_keys = {
+        "id",
+        "name",
+        "opt_out_url",
+        "mechanism_type",
+        "difficulty",
+        "consolidated",
+        "covers",
+        "jurisdiction_path",
+        "status",
+    }
+    for row in report:
+        missing = required_keys - row.keys()
+        if missing:
+            result.fail("row contains required keys", f"row '{row.get('id')}' missing {missing}")
 
+    ids = [r["id"] for r in report]
+    if len(ids) != len(set(ids)):
+        dupes = {i for i in ids if ids.count(i) > 1}
+        result.fail("row ids are unique", f"duplicate ids: {dupes}")
+
+    # Owner-group dedup, checked dynamically against whatever the registry
+    # actually contains — never hardcode a specific owner-group name here.
+    data = discover_mod._load_brokers()
+    owner_groups = data.get("owner_groups", {})
+    searchable_ids = {b["id"] for b in data["brokers"] if b.get("publicly_searchable")}
+    by_id = {r["id"]: r for r in report}
+
+    for group_key, group in owner_groups.items():
+        members_in_registry = [m for m in group.get("members", []) if m in searchable_ids]
+        if not members_in_registry:
+            continue  # this owner group has no members present in the registry
+
+        # discover.py's dedupe emits the consolidated row with id == group_key.
+        consolidated_row = by_id.get(group_key)
+        if consolidated_row is None or not consolidated_row.get("consolidated"):
+            result.fail(
+                f"exactly one consolidated row exists for owner group '{group_key}'",
+                f"no consolidated row with id '{group_key}' found",
+            )
+        elif not set(members_in_registry).issubset(set(consolidated_row.get("covers", []))):
+            result.fail(
+                f"consolidated row for '{group_key}' covers all its registry members",
+                f"covers={consolidated_row.get('covers')}, expected superset of {members_in_registry}",
+            )
+
+        for member_id in members_in_registry:
+            if member_id in by_id and member_id != group_key:
+                result.fail(
+                    f"owner-group member '{member_id}' does not appear as a standalone row",
+                    f"found standalone row: {by_id[member_id]}",
+                )
+
+    # Spot checks that remain valid at any registry size.
     if not any(e["id"] == "whitepages" for e in report):
         result.fail("whitepages present as standalone")
 

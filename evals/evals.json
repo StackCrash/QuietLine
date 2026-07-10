@@ -6,7 +6,7 @@
     {
       "id": "eval-01-discovery",
       "name": "Discovery correctness and owner deduplication",
-      "description": "Given the 5 seed brokers, discover() should return 4 entries (not 5) because BeenVerified collapses into the PeopleConnect group. The PeopleConnect group entry should have consolidated=true and covers=[beenverified, peoplefinders, intelius, ussearch, truthfinder].",
+      "description": "Registry-size independent: data/brokers.json is expected to grow from its current seed size toward ~50 entries, so this eval asserts behavior rather than an exact count. discover() should return at least 5 entries, every row should have the required Discovery Report keys, row ids should be unique, and owner-group dedup should hold for every group present in the registry (loaded dynamically from data/brokers.json, not hardcoded to any one group name): each owner group with at least one member present in the registry as a publicly_searchable broker collapses into exactly one consolidated row whose covers is a superset of that group's registry members, and none of those members appears as a standalone row.",
       "script": "discover.py",
       "inputs": {
         "name": "Jane Test",
@@ -16,12 +16,20 @@
       },
       "assertions": [
         {
-          "description": "Total entries equals 5: 4 standalone + 1 consolidated PeopleConnect group (which replaces beenverified)",
-          "check": "len(result) == 5"
+          "description": "Total entries is at least 5 (a floor, not an exact count — the registry is expected to grow)",
+          "check": "len(result) >= 5"
         },
         {
-          "description": "PeopleConnect consolidated entry exists with correct covers list",
-          "check": "any(e.get('consolidated') and 'beenverified' in e.get('covers', []) for e in result)"
+          "description": "Every row has the required Discovery Report keys: id, name, opt_out_url, mechanism_type, difficulty, consolidated, covers, jurisdiction_path, status",
+          "check": "all(required_keys.issubset(row.keys()) for row in result)"
+        },
+        {
+          "description": "Row ids are unique",
+          "check": "len([r['id'] for r in result]) == len({r['id'] for r in result})"
+        },
+        {
+          "description": "For every owner group in data/brokers.json with at least one member present in the registry as a publicly_searchable broker: exactly one consolidated row exists for that group, its covers is a superset of the group's registry members, and none of those members appears as a standalone row",
+          "check": "all(owner_group_dedup_holds(group_key, group, result) for group_key, group in owner_groups.items())"
         },
         {
           "description": "Whitepages is present as a standalone entry",
