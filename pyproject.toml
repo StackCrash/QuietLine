@@ -1,6 +1,6 @@
 [project]
 name = "quietline"
-version = "0.1.0"
+version = "0.2.0"
 description = "A Claude Cowork skill that finds where a phone number is exposed across data brokers and drives opt-out/deletion requests to completion."
 readme = "README.md"
 requires-python = ">=3.13"

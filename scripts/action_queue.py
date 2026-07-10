@@ -197,8 +197,8 @@ def render_markdown(items: list, limit: Optional[int] = None) -> str:
     shown = items[:limit] if limit else items
     remaining = total - len(shown)
 
-    plural = "site" if total == 1 else "sites"
-    lines = ["# QuietLine — Action Queue", "", f"{total} {plural} need your attention.", ""]
+    noun_verb = "site needs" if total == 1 else "sites need"
+    lines = ["# QuietLine — Action Queue", "", f"{total} {noun_verb} your attention.", ""]
 
     current_section = None
     for item in shown:

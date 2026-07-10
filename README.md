@@ -55,7 +55,7 @@ QuietLine is designed to be transparent about what it cannot do:
 
 ## Data sources
 
-The broker registry (`data/brokers.json`) is assembled from free, public sources and periodically refreshed:
+The broker registry (`data/brokers.json`) currently curates 51 brokers, assembled from free, public sources and periodically refreshed. `scripts/validate_registry.py validate` checks the registry against its schema shape (required fields, enums, owner-group consistency) and reports the current count.
 
 - **State data-broker registries** — California CPPA, Vermont, Texas, Oregon (authoritative, broker-declared lists)
 - **Privacy Rights Clearinghouse** consolidated database (750+ brokers)
@@ -83,7 +83,7 @@ QuietLine handles sensitive personal data as a core input — these aren't footn
 
 | Rule | Enforcement |
 |---|---|
-| **Own-data only** | Ownership affirmation is required before any action; third-party requests are refused at the gate |
+| **Own-data only** | Script-enforced (SAFE-1): `discover.py` exits 3 unless ownership is affirmed (`--affirm-ownership` or `case_store.py mark-affirmation`); submissions are blocked without an affirmed case store |
 | **No anti-bot circumvention** | CAPTCHAs and equivalent controls are always routed to you, never solved by the agent |
 | **Truthful requests only** | Submissions use your real, accurate details and lawful statutory language |
 | **Respectful automation** | Submissions are paced and rate-limited; no site hammering |
@@ -100,13 +100,18 @@ QuietLine is implemented as a Cowork skill following Anthropic's skill-authoring
 quietline/
 ├── SKILL.md                      # Lean orchestrator — phases, routing, safety gates (< 500 lines)
 ├── scripts/                      # Deterministic logic — executed, not reasoned
-│   ├── discover.py               #   Query registry, check searchable brokers, dedupe by parent owner
+│   ├── discover.py               #   Query registry, check searchable brokers, dedupe by parent owner (SAFE-1 gated)
 │   ├── verify_url.py             #   Confirm an opt-out URL is live; fall back to homepage privacy footer
 │   ├── case_store.py             #   Read/write/update case records; idempotency guard (no double-submits)
 │   ├── diff_scan.py              #   Diff a re-scan vs last run → {still-clear, reappeared, new}
 │   ├── deadlines.py              #   Compute statutory response deadlines; flag overdue for escalation
 │   ├── render_email.py           #   Fill a jurisdiction-parameterized email from templates
-│   └── build_dashboard.py        #   Render the status dashboard from the case store
+│   ├── build_dashboard.py        #   Render the status dashboard from the case store
+│   ├── action_queue.py           #   Numbered human-action queue; collapses cases by owner group
+│   ├── confirmation.py           #   Classify a saved confirmation email (link/confirmed/rejected/unrelated)
+│   ├── rescan.py                 #   Phase-5 orchestration: discover + diff + optional apply in one run
+│   ├── validate_registry.py      #   Validate/merge broker registry fragments against the schema shape
+│   └── package_skill.py          #   Build the distributable quietline.skill zip (used by release.yml)
 ├── references/                   # Loaded on demand (progressive disclosure)
 │   ├── mechanisms/               #   One playbook per opt-out mechanism
 │   │   ├── web-form.md
@@ -125,7 +130,9 @@ quietline/
 ├── schemas/
 │   └── case_record.json          #   Status-tracking schema for durable storage
 └── evals/
-    └── evals.json                #   Test cases including the SAFE-1 release-blocking safety eval
+    ├── evals.json                #   Test cases including the SAFE-1 release-blocking safety eval
+    ├── fixtures/                  #   Sample confirmation emails/HTML used by the classifier + link-extraction evals
+    └── run_evals.py               #   Eval runner (10/10 must pass)
 ```
 
 ### Design principles
@@ -160,7 +167,7 @@ These are backed by scripts, not agent reasoning, so they hold across sessions:
 python3 evals/run_evals.py
 ```
 
-All 5 evals must pass. Eval #5 (SAFE-1: own-data only) is a release-blocking gate — a non-zero exit here means the ownership gate has regressed.
+All 10 evals must pass. Eval #5 (SAFE-1: own-data only) is a release-blocking gate — a non-zero exit here means the ownership gate has regressed.
 
 ```bash
 # Verbose output with per-assertion detail
@@ -172,9 +179,18 @@ python3 evals/run_evals.py --eval-id eval-05-safety-own-data-only
 
 ### Run the scripts directly
 
+> [!NOTE]
+> `discover.py` enforces SAFE-1: it exits 3 unless ownership is affirmed. Either pass
+> `--affirm-ownership` on the command, or run `case_store.py mark-affirmation` once up
+> front so subsequent commands (including submissions) pass the gate.
+
 ```bash
+# Affirm ownership once (or pass --affirm-ownership on discover.py directly)
+python3 scripts/case_store.py mark-affirmation
+
 # Discovery — see which brokers may hold your number
-python3 scripts/discover.py --name "Your Name" --phone "+15551234567" --state CA --output table
+python3 scripts/discover.py --name "Your Name" --phone "+15551234567" --state CA \
+  --affirm-ownership --output table
 
 # Verify a broker's opt-out URL is live
 python3 scripts/verify_url.py --broker-id whitepages --dry-run
@@ -190,6 +206,13 @@ python3 scripts/deadlines.py --flag-overdue
 # Render a deletion email (preview before sending)
 python3 scripts/render_email.py --template deletion --broker-id radaris \
   --state CA --name "Your Name" --phone "+15551234567" --email "optout@yourdomain.com"
+
+# Render the numbered human-action queue (CAPTCHAs, phone verification, etc.)
+python3 scripts/action_queue.py --output markdown
+
+# Phase-5 re-scan: discover + diff against the case store in one pass
+python3 scripts/rescan.py --dry-run          # read-only preview
+python3 scripts/rescan.py --apply            # refile reappeared, register new, record scan dates
 ```
 
 ### Verify static correctness
@@ -235,14 +258,16 @@ To add a new state: add an entry to `data/jurisdictions.json` and a correspondin
 
 ## Roadmap
 
-| Milestone | Scope |
-|---|---|
-| **M0 — Manual-assist MVP** | Discovery + Discovery Report + drafted deletion emails + tracked action queue |
-| **M1 — Automated form-filling** | Claude-in-Chrome form submission for no-CAPTCHA sites; human-step batching |
-| **M2 — Confirmation automation** | Consented inbox handling to auto-clear email loops |
-| **M3 — Monitoring loop** | Scheduled 90-day re-scans, diffing, deadline-based escalation |
-| **M4 — Jurisdiction expansion** | CA DROP one-shot path; per-state statutory templates; consolidated-owner shortcuts |
-| **M5 — Harden & package** | Full eval suite (SAFE-1 must pass 100%); package `.skill` for one-click install |
+All milestones below have shipped as of v0.2.0.
+
+| Milestone | Scope | Status |
+|---|---|---|
+| **M0 — Manual-assist MVP** | Discovery + Discovery Report + drafted deletion emails + tracked action queue | ✓ shipped |
+| **M1 — Automated form-filling** | Claude-in-Chrome form submission for no-CAPTCHA sites; human-step batching | ✓ shipped |
+| **M2 — Confirmation automation** | Consented inbox handling to auto-clear email loops | ✓ shipped |
+| **M3 — Monitoring loop** | Scheduled 90-day re-scans, diffing, deadline-based escalation | ✓ shipped |
+| **M4 — Jurisdiction expansion** | CA DROP one-shot path; per-state statutory templates; consolidated-owner shortcuts | ✓ shipped |
+| **M5 — Harden & package** | Full eval suite (SAFE-1 must pass 100%); package `.skill` for one-click install | ✓ shipped |
 
 ---
 
