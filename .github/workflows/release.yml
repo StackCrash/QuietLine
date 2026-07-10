@@ -1,0 +1,56 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish quietline.skill
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - run: uv sync
+
+      # Release gate: don't publish if the eval suite (including the
+      # release-blocking SAFE-1 own-data-only gate) is failing.
+      - name: Run eval suite as a release gate
+        run: uv run python evals/run_evals.py --verbose
+
+      - name: Package skill bundle
+        run: |
+          set -euo pipefail
+          STAGE="$(mktemp -d)/quietline"
+          mkdir -p "$STAGE"
+
+          # Skill payload only — must match the list documented in CLAUDE.md.
+          # Excludes dev/CI files: .github/, pyproject.toml, uv.lock, CLAUDE.md,
+          # evals/, __pycache__/, .venv/.
+          cp SKILL.md "$STAGE/"
+          cp -r scripts "$STAGE/scripts"
+          cp -r references "$STAGE/references"
+          cp -r assets "$STAGE/assets"
+          cp -r data "$STAGE/data"
+          cp -r schemas "$STAGE/schemas"
+
+          find "$STAGE" -name "__pycache__" -type d -prune -exec rm -rf {} +
+          find "$STAGE" -name "*.pyc" -delete
+
+          (cd "$(dirname "$STAGE")" && zip -r "$GITHUB_WORKSPACE/quietline.skill" quietline)
+
+      - name: Publish GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ github.ref_name }}" quietline.skill \
+            --title "${{ github.ref_name }}" \
+            --generate-notes

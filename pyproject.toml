@@ -1,0 +1,72 @@
+[project]
+name = "quietline"
+version = "0.1.0"
+description = "A Claude Cowork skill that finds where a phone number is exposed across data brokers and drives opt-out/deletion requests to completion."
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "jsonschema>=4.23",
+    "requests>=2.32",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.8",
+    "mypy>=1.13",
+    "pytest>=8.3",
+    "pytest-cov>=6.0",
+    "pip-audit>=2.7",
+    "bandit>=1.8",
+    "types-requests>=2.32",
+    "types-jsonschema>=4.23",
+]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+target-version = "py313"
+line-length = 120
+src = ["scripts", "evals"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "PL",  # pylint
+    "S",   # flake8-bandit (security)
+    "UP",  # pyupgrade
+]
+ignore = [
+    "PLR0913", # too many arguments — CLI scripts have wide argparse surfaces
+    "PLR0912", # too many branches — status/routing logic is inherently branchy
+    "PLR2004", # magic value comparisons — fine for CLI arg parsing
+    "UP045",   # `Optional[X]` — codebase consistently predates `X | None` syntax
+    "UP017",   # `timezone.utc` — codebase consistently predates the `datetime.UTC` alias
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Eval harness intentionally exercises risky paths (temp dirs, subprocess-like
+# fixtures) and asserts on internal state — bandit-style checks are noisy there.
+"evals/*" = ["S101", "S108"]
+# run_evals.py inserts scripts/ onto sys.path before importing sibling modules
+# by name (there's no installed package to import them through otherwise).
+"evals/run_evals.py" = ["E402", "I001"]
+
+[tool.mypy]
+python_version = "3.13"
+files = ["scripts", "evals"]
+mypy_path = "scripts"
+explicit_package_bases = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+check_untyped_defs = true
+
+[tool.pytest.ini_options]
+testpaths = ["evals"]
+
+[tool.bandit]
+exclude_dirs = ["evals", ".venv"]
+skips = ["B101"]

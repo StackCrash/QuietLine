@@ -1,0 +1,19 @@
+version: 2
+updates:
+  # Python dependencies, tracked via uv.lock
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+
+  # Keep GitHub Actions pins (checkout, setup-uv, codeql-action, etc.) current
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+      - "github-actions"

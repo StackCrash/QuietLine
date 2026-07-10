@@ -1,0 +1,102 @@
+{
+  "schema_version": "1.0",
+  "last_refreshed": "2026-07-09",
+  "brokers": [
+    {
+      "id": "whitepages",
+      "name": "Whitepages",
+      "owner": "Whitepages Inc.",
+      "parent_id": null,
+      "opt_out_url": "https://www.whitepages.com/suppression-requests",
+      "homepage": "https://www.whitepages.com",
+      "mechanism_type": "web-form",
+      "captcha_required": false,
+      "publicly_searchable": true,
+      "ca_registered": true,
+      "jurisdiction_notes": "Honors deletion requests from all US residents. CA residents get CCPA language.",
+      "difficulty": "easy",
+      "reappearance_tendency": "medium",
+      "last_verified": "2026-07-09",
+      "notes": "One of the highest-traffic people-search sites. Listing appears prominently in Google results for name + phone searches. Opt-out form requires first/last name, city, state, and phone number. No account needed."
+    },
+    {
+      "id": "spokeo",
+      "name": "Spokeo",
+      "owner": "Spokeo Inc.",
+      "parent_id": null,
+      "opt_out_url": "https://www.spokeo.com/optout",
+      "homepage": "https://www.spokeo.com",
+      "mechanism_type": "web-form",
+      "captcha_required": true,
+      "publicly_searchable": true,
+      "ca_registered": true,
+      "jurisdiction_notes": "Honors deletion requests from all US residents.",
+      "difficulty": "medium",
+      "reappearance_tendency": "high",
+      "last_verified": "2026-07-09",
+      "notes": "Requires CAPTCHA solve during submission — route to captcha-handoff mechanism. Agent pre-fills name, email, and listing URL; user completes CAPTCHA and submits. Email confirmation link is sent after submission."
+    },
+    {
+      "id": "beenverified",
+      "name": "BeenVerified",
+      "owner": "PeopleConnect Inc.",
+      "parent_id": "peopleconnect",
+      "opt_out_url": "https://www.beenverified.com/app/optout/search",
+      "homepage": "https://www.beenverified.com",
+      "mechanism_type": "web-form",
+      "captcha_required": false,
+      "publicly_searchable": true,
+      "ca_registered": true,
+      "jurisdiction_notes": "PeopleConnect's centralized opt-out covers BeenVerified, PeopleFinders, Intelius, US Search, and TruthFinder. File once at the centralized URL.",
+      "difficulty": "easy",
+      "reappearance_tendency": "medium",
+      "last_verified": "2026-07-09",
+      "notes": "Part of the PeopleConnect network. Use the centralized opt-out at opt.peopleconnect.us rather than this URL for FR-2.3 consolidated owner handling. This URL is kept for individual fallback only.",
+      "centralized_opt_out_url": "https://www.peopleconnect.us/do-not-sell",
+      "network_members": ["beenverified", "peoplefinders", "intelius", "ussearch", "truthfinder"]
+    },
+    {
+      "id": "radaris",
+      "name": "Radaris",
+      "owner": "Radaris LLC",
+      "parent_id": null,
+      "opt_out_url": null,
+      "opt_out_email": "privacy@radaris.com",
+      "homepage": "https://radaris.com",
+      "mechanism_type": "email-request",
+      "captcha_required": false,
+      "publicly_searchable": true,
+      "ca_registered": false,
+      "jurisdiction_notes": "No web opt-out form; deletion must be requested by email. Include full name, phone number, and URL of the listing in the email.",
+      "difficulty": "medium",
+      "reappearance_tendency": "high",
+      "last_verified": "2026-07-09",
+      "notes": "Does not have a self-service opt-out form. Email request is the only path. Use render_email.py to draft the deletion request. Turnaround is typically 7–14 days; follow up if no confirmation within 30."
+    },
+    {
+      "id": "infotracer",
+      "name": "InfoTracer",
+      "owner": "InfoTracer Inc.",
+      "parent_id": null,
+      "opt_out_url": "https://infotracer.com/optout",
+      "homepage": "https://infotracer.com",
+      "mechanism_type": "web-form",
+      "captcha_required": false,
+      "publicly_searchable": true,
+      "ca_registered": true,
+      "jurisdiction_notes": "CA-registered data broker. CA DROP path covers this broker for CA residents.",
+      "difficulty": "easy",
+      "reappearance_tendency": "low",
+      "last_verified": "2026-07-09",
+      "notes": "CA-registered broker used for the ca-drop eval path. Web form requires name and state only; email confirmation loop follows submission."
+    }
+  ],
+  "owner_groups": {
+    "peopleconnect": {
+      "display_name": "PeopleConnect Inc.",
+      "centralized_opt_out_url": "https://www.peopleconnect.us/do-not-sell",
+      "members": ["beenverified", "peoplefinders", "intelius", "ussearch", "truthfinder"],
+      "notes": "A single opt-out at the PeopleConnect URL suppresses listings across all member brands. File once, not once per brand."
+    }
+  }
+}

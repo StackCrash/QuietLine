@@ -1,0 +1,121 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://quietline/schemas/case_record.json",
+  "title": "CaseRecord",
+  "description": "Tracks the status of a single data-broker opt-out request",
+  "type": "object",
+  "required": [
+    "broker_id",
+    "status",
+    "created_at"
+  ],
+  "properties": {
+    "broker_id": {
+      "type": "string",
+      "description": "Unique identifier matching an entry in data/brokers.json"
+    },
+    "listing_url": {
+      "type": ["string", "null"],
+      "format": "uri",
+      "description": "URL of the discovered listing on the broker site, if found"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "discovered",
+        "submitted",
+        "awaiting-confirmation",
+        "awaiting-user",
+        "confirmed-removed",
+        "failed",
+        "reappeared"
+      ],
+      "description": "Current stage of the opt-out request"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp when this record was first created"
+    },
+    "submitted_at": {
+      "type": ["string", "null"],
+      "format": "date-time",
+      "description": "ISO 8601 timestamp when the opt-out was submitted"
+    },
+    "deadline_at": {
+      "type": ["string", "null"],
+      "format": "date-time",
+      "description": "ISO 8601 statutory response deadline (computed by deadlines.py)"
+    },
+    "confirmed_at": {
+      "type": ["string", "null"],
+      "format": "date-time",
+      "description": "ISO 8601 timestamp when removal was confirmed"
+    },
+    "mechanism": {
+      "type": ["string", "null"],
+      "enum": [
+        "web-form",
+        "email-request",
+        "account-required",
+        "phone-verification",
+        "id-upload",
+        "captcha-handoff",
+        "ca-drop",
+        null
+      ],
+      "description": "Opt-out mechanism used, matching references/mechanisms/* filenames"
+    },
+    "jurisdiction": {
+      "type": ["string", "null"],
+      "description": "Two-letter state code determining statutory language and deadline (e.g. 'CA', 'TX')"
+    },
+    "opt_out_url_used": {
+      "type": ["string", "null"],
+      "format": "uri",
+      "description": "Actual opt-out URL submitted to (may differ from brokers.json if verify_url.py resolved a fallback)"
+    },
+    "pii_sent": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "List of PII field names submitted to this broker (e.g. ['name', 'phone', 'state'])",
+      "examples": [["name", "phone", "state"], ["name", "phone", "dob", "address"]]
+    },
+    "human_action_required": {
+      "type": ["string", "null"],
+      "description": "Human-readable description of what the user needs to do (null if fully automated)"
+    },
+    "notes": {
+      "type": ["string", "null"],
+      "description": "Free-text notes, e.g. failure reason or dark-pattern description"
+    },
+    "audit_log": {
+      "type": "array",
+      "description": "Chronological log of every state change and action taken on this case",
+      "items": {
+        "type": "object",
+        "required": ["timestamp", "action"],
+        "properties": {
+          "timestamp": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "action": {
+            "type": "string",
+            "description": "Short description of the action taken"
+          },
+          "actor": {
+            "type": "string",
+            "enum": ["agent", "user"],
+            "description": "Whether the agent or the user performed this action"
+          },
+          "detail": {
+            "type": ["string", "null"],
+            "description": "Additional detail (e.g. email subject line, form URL, error message)"
+          }
+        }
+      }
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,71 @@
+{
+  "jurisdictions": {
+    "CA": {
+      "name": "California",
+      "statutes": ["CCPA (Cal. Civ. Code §1798.100–.199)", "CPRA"],
+      "response_deadline_days": 45,
+      "drop_eligible": true,
+      "drop_url": "https://oag.ca.gov/privacy/databrokerslist",
+      "deletion_right": true,
+      "opt_out_right": true,
+      "statutory_language": "Pursuant to the California Consumer Privacy Act (Cal. Civ. Code §1798.105), I request that you delete all personal information you have collected about me, including but not limited to my name, phone number(s), addresses, and any associated records. Please confirm deletion within 45 business days.",
+      "escalation_language": "This is a follow-up to my deletion request submitted on {submitted_date}. Under the CCPA, you are required to respond within 45 business days. That deadline has passed. Please confirm immediate deletion or I will file a complaint with the California Attorney General's office.",
+      "notes": "CA DROP provides a one-shot deletion request to all brokers registered with the California CPPA. File DROP first for maximum coverage, then handle non-registered brokers individually."
+    },
+    "TX": {
+      "name": "Texas",
+      "statutes": ["Texas Data Privacy and Security Act (TDPSA, S.B. 2)"],
+      "response_deadline_days": 45,
+      "drop_eligible": false,
+      "deletion_right": true,
+      "opt_out_right": true,
+      "statutory_language": "Pursuant to the Texas Data Privacy and Security Act (Tex. Bus. & Com. Code Ch. 541), I request that you delete all personal information you have collected about me, including my name, phone number(s), and associated records. Please confirm deletion within 45 days.",
+      "escalation_language": "This is a follow-up to my deletion request submitted on {submitted_date}. Under the Texas Data Privacy and Security Act, you are required to respond within 45 days. That deadline has passed. Please confirm immediate deletion.",
+      "notes": "TDPSA effective July 1, 2024."
+    },
+    "VA": {
+      "name": "Virginia",
+      "statutes": ["Virginia Consumer Data Protection Act (VCDPA)"],
+      "response_deadline_days": 45,
+      "drop_eligible": false,
+      "deletion_right": true,
+      "opt_out_right": true,
+      "statutory_language": "Pursuant to the Virginia Consumer Data Protection Act (Va. Code Ann. §59.1-575 et seq.), I request that you delete all personal information you have collected about me. Please confirm deletion within 45 days.",
+      "escalation_language": "This is a follow-up to my deletion request submitted on {submitted_date}. Under the VCDPA, you are required to respond within 45 days. That deadline has passed. Please confirm immediate deletion.",
+      "notes": null
+    },
+    "CO": {
+      "name": "Colorado",
+      "statutes": ["Colorado Privacy Act (CPA)"],
+      "response_deadline_days": 45,
+      "drop_eligible": false,
+      "deletion_right": true,
+      "opt_out_right": true,
+      "statutory_language": "Pursuant to the Colorado Privacy Act (C.R.S. §6-1-1301 et seq.), I request that you delete all personal information you have collected about me. Please confirm deletion within 45 days.",
+      "escalation_language": "This is a follow-up to my deletion request submitted on {submitted_date}. Under the Colorado Privacy Act, you are required to respond within 45 days. That deadline has passed. Please confirm immediate deletion.",
+      "notes": null
+    },
+    "CT": {
+      "name": "Connecticut",
+      "statutes": ["Connecticut Data Privacy Act (CTDPA)"],
+      "response_deadline_days": 45,
+      "drop_eligible": false,
+      "deletion_right": true,
+      "opt_out_right": true,
+      "statutory_language": "Pursuant to the Connecticut Data Privacy Act (Conn. Gen. Stat. §42-515 et seq.), I request that you delete all personal information you have collected about me. Please confirm deletion within 45 days.",
+      "escalation_language": "This is a follow-up to my deletion request submitted on {submitted_date}. Under the CTDPA, you are required to respond within 45 days. That deadline has passed. Please confirm immediate deletion.",
+      "notes": null
+    },
+    "default": {
+      "name": "United States (general)",
+      "statutes": ["FCRA (15 U.S.C. §1681 et seq.)"],
+      "response_deadline_days": 45,
+      "drop_eligible": false,
+      "deletion_right": false,
+      "opt_out_right": true,
+      "statutory_language": "I am requesting the removal of my personal information from your database, including my name, phone number(s), and associated records. Please process this opt-out request and confirm removal.",
+      "escalation_language": "This is a follow-up to my removal request submitted on {submitted_date}. I have not received a confirmation of removal. Please process this request immediately and confirm.",
+      "notes": "No comprehensive federal privacy statute. Brokers are still obligated to honor opt-out requests under their own privacy policies; many cite 30–45 days. Use state-specific language when the user's state is known."
+    }
+  }
+}
