@@ -62,6 +62,22 @@ Route here when `brokers.json` has `mechanism_type: "email-request"`. These brok
   ```
 - If still no response after escalation, mark the case `failed` and note the dark pattern.
 
+## Confirmation loop
+
+Every candidate reply — not just ones that "look like" a confirmation — should go through the deterministic classifier rather than being read and judged by eyeballing the inbox:
+
+1. **Save the raw email body** to a file (the agent never pipes a live mailbox into the script; it saves a copy first).
+2. **Classify it:**
+   ```bash
+   python scripts/confirmation.py --email-file <path> --broker-id <id>
+   ```
+   This never makes a network call and never touches the mailbox itself — it only reasons over the saved text/HTML. It returns one of `confirmation-link`, `already-confirmed`, `rejection`, or `unrelated`.
+3. **Act on the JSON:**
+   - `confirmation-link` — with `inbox-click` consent, open `confirmation_url` (a browsing agent click, not a script fetch) to complete the loop; the case stays `awaiting-confirmation` until you do.
+   - `already-confirmed` — apply directly: `python scripts/confirmation.py --email-file <path> --broker-id <id> --apply` (moves the case to `confirmed-removed`).
+   - `rejection` — apply with `--apply` (moves the case to `failed`), then consult "Common failure modes" below.
+   - `unrelated` — no case-store action; keep watching the inbox.
+
 ## Common failure modes
 
 | Symptom | Action |

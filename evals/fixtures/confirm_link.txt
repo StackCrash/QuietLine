@@ -1,0 +1,9 @@
+Hello Jane Test,
+
+We received your opt-out request for ExampleData. Please confirm your opt-out request by visiting the link below:
+
+https://example.com/optout/confirm?token=xyz789
+
+If you did not request this, please ignore this email.
+
+ExampleData Privacy Team

@@ -1,5 +1,5 @@
 {
-  "description": "QuietLine eval harness \u2014 6 test cases covering correctness, idempotency, deadline logic, the SAFE-1 safety gate, and the human-action queue.",
+  "description": "QuietLine eval harness \u2014 7 test cases covering correctness, idempotency, deadline logic, the SAFE-1 safety gate, the human-action queue, and confirmation-email classification.",
   "schema_version": "1.0",
   "notes": "Run with: python evals/run_evals.py. Eval #5 (safety) is a hard gate \u2014 non-zero exit if it fails.",
   "evals": [
@@ -237,6 +237,43 @@
         {
           "description": "An empty case store renders a friendly 'nothing needs your attention' message and exits 0",
           "check": "'Nothing needs your attention' in render_markdown(build_queue([], brokers_data))"
+        }
+      ],
+      "release_blocking": false
+    },
+    {
+      "id": "eval-07-confirmation-classification",
+      "name": "Confirmation-email classification",
+      "description": "scripts/confirmation.py classifies a saved opt-out confirmation email (never fetched, never a live mailbox) into confirmation-link, already-confirmed, rejection, or unrelated, in that priority order. Uses synthetic fixtures under evals/fixtures/ (Jane Test / example.com data only). confirm_link.html contains a real https confirm anchor plus a javascript: decoy and a relative /unsubscribe decoy, both of which must be ignored. confirm_link_http_only.html contains only an http:// link matching confirmation-link language; per the documented decoy-handling behavior (see scripts/confirmation.py's module docstring), this does NOT classify as confirmation-link — it falls through to 'unrelated' rather than reporting a null confirmation_url.",
+      "script": "confirmation.py",
+      "assertions": [
+        {
+          "description": "confirm_link.html classifies as confirmation-link and extracts the real https confirm URL, never the javascript:/relative decoys",
+          "check": "classify(confirm_link_html)['classification'] == 'confirmation-link' and classify(confirm_link_html)['confirmation_url'] == 'https://example.com/optout/confirm?token=abc123def456'"
+        },
+        {
+          "description": "confirm_link.txt classifies as confirmation-link and extracts an https confirmation URL",
+          "check": "classify(confirm_link_txt)['classification'] == 'confirmation-link' and classify(confirm_link_txt)['confirmation_url'].startswith('https://')"
+        },
+        {
+          "description": "confirm_link_http_only.html classifies as 'unrelated' (documented http://-only behavior) with confirmation_url null",
+          "check": "classify(confirm_link_http_only_html)['classification'] == 'unrelated' and classify(confirm_link_http_only_html)['confirmation_url'] is None"
+        },
+        {
+          "description": "already_confirmed.txt classifies as already-confirmed with suggested_status confirmed-removed",
+          "check": "classify(already_confirmed_txt)['classification'] == 'already-confirmed' and classify(already_confirmed_txt)['suggested_status'] == 'confirmed-removed'"
+        },
+        {
+          "description": "rejection.txt classifies as rejection with suggested_status failed",
+          "check": "classify(rejection_txt)['classification'] == 'rejection' and classify(rejection_txt)['suggested_status'] == 'failed'"
+        },
+        {
+          "description": "unrelated.txt classifies as unrelated with suggested_status null",
+          "check": "classify(unrelated_txt)['classification'] == 'unrelated' and classify(unrelated_txt)['suggested_status'] is None"
+        },
+        {
+          "description": "--apply on a temp store (seeded via upsert()) moves an already-confirmed case to confirmed-removed and a rejection case to failed",
+          "check": "get('whitepages')['status'] == 'confirmed-removed' and get('spokeo')['status'] == 'failed'"
         }
       ],
       "release_blocking": false

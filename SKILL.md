@@ -146,8 +146,13 @@ python scripts/render_email.py --template deletion --broker-id <id> --state CA
 
 With `inbox-read` + `inbox-click` consent:
 - Poll the connected inbox for confirmation emails
-- Open verification links and complete the loop
-- Log each completed confirmation: `python scripts/case_store.py mark --broker-id <id> --status confirmed-removed`
+- Save each candidate reply to a file, then classify it deterministically rather than judging it by eye:
+  ```bash
+  python scripts/confirmation.py --email-file <path> --broker-id <id>
+  ```
+  This never touches the mailbox or the network — it only reasons over the saved copy — and returns one of `confirmation-link`, `already-confirmed`, `rejection`, `unrelated`. See `references/mechanisms/email-request.md`'s "Confirmation loop" for the full routing.
+- `confirmation-link`: open `confirmation_url` via the browsing agent (with `inbox-click` consent) to complete the loop.
+- `already-confirmed` / `rejection`: apply the suggested status directly with `--apply` (moves the case to `confirmed-removed` or `failed`, respectively) instead of hand-writing `case_store.py mark`.
 
 For steps that need the user, render the numbered queue with the script rather than composing it by hand — it is the deterministic, resumable source of truth:
 ```bash

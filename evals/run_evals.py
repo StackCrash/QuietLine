@@ -1,7 +1,7 @@
 """
 QuietLine eval harness runner.
 
-Executes the 6 test cases in evals.json against the actual scripts using
+Executes the 7 test cases in evals.json against the actual scripts using
 temporary case-store files so production data is never touched.
 
 Exit codes:
@@ -17,6 +17,7 @@ Usage:
 
 import argparse
 import os
+import subprocess
 import sys
 import tempfile
 from datetime import datetime, timedelta, timezone
@@ -30,6 +31,9 @@ import discover as discover_mod
 import case_store as cs_mod
 import deadlines as dl_mod
 import action_queue as aq_mod
+import confirmation as conf_mod
+
+FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 
 def _tmpstore(tmp_dir: str) -> str:
@@ -472,6 +476,157 @@ def run_eval_06_action_queue(verbose: bool) -> EvalResult:
     return result
 
 
+def _classify_fixture(name: str) -> dict:
+    raw = (FIXTURES_DIR / name).read_text()
+    is_html = conf_mod._looks_like_html(raw, name)
+    return conf_mod.classify(raw, is_html)
+
+
+def _run_confirmation_apply(email_file: Path, broker_id: str, case_store: str) -> subprocess.CompletedProcess:
+    # Fixed, hardcoded argv (interpreter path + this repo's own script + a
+    # broker_id drawn from data/brokers.json below) — nothing here originates
+    # from untrusted input, unlike the generic bandit S603 concern.
+    return subprocess.run(  # noqa: S603
+        [
+            sys.executable,
+            str(SCRIPTS_DIR / "confirmation.py"),
+            "--email-file",
+            str(email_file),
+            "--broker-id",
+            broker_id,
+            "--apply",
+            "--case-store",
+            case_store,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def _check_fixture_classifications(result: EvalResult, verbose: bool) -> None:
+    """Assert each fixture classifies correctly (the pure classify() path, no subprocess)."""
+    link_html = _classify_fixture("confirm_link.html")
+    if verbose:
+        print(f"  confirm_link.html -> {link_html}")
+    if link_html["classification"] != "confirmation-link":
+        result.fail("confirm_link.html classifies as confirmation-link", f"got {link_html['classification']}")
+    if link_html["confirmation_url"] != "https://example.com/optout/confirm?token=abc123def456":
+        result.fail(
+            "confirm_link.html extracts the real https confirmation URL, not a decoy",
+            f"got {link_html['confirmation_url']}",
+        )
+    if link_html["confirmation_url"] and (
+        "javascript:" in link_html["confirmation_url"] or link_html["confirmation_url"].startswith("/")
+    ):
+        result.fail("extracted URL must not be the javascript: or relative decoy", link_html["confirmation_url"])
+
+    link_txt = _classify_fixture("confirm_link.txt")
+    if verbose:
+        print(f"  confirm_link.txt -> {link_txt}")
+    if link_txt["classification"] != "confirmation-link":
+        result.fail("confirm_link.txt classifies as confirmation-link", f"got {link_txt['classification']}")
+    if not (link_txt["confirmation_url"] or "").startswith("https://"):
+        result.fail("confirm_link.txt extracts an https confirmation URL", f"got {link_txt['confirmation_url']}")
+
+    # Documented behavior (scripts/confirmation.py docstring): confirmation-link
+    # requires a valid https:// URL; an http://-only link does not qualify, so
+    # classification falls through to 'unrelated' rather than reporting
+    # confirmation-link with a null URL.
+    http_only = _classify_fixture("confirm_link_http_only.html")
+    if verbose:
+        print(f"  confirm_link_http_only.html -> {http_only}")
+    if http_only["classification"] != "unrelated":
+        result.fail(
+            "confirm_link_http_only.html classifies as 'unrelated' (documented http://-only behavior)",
+            f"got {http_only['classification']}",
+        )
+    if http_only["confirmation_url"] is not None:
+        result.fail("confirm_link_http_only.html never extracts an http:// URL", http_only["confirmation_url"])
+
+    already_confirmed = _classify_fixture("already_confirmed.txt")
+    if verbose:
+        print(f"  already_confirmed.txt -> {already_confirmed}")
+    if already_confirmed["classification"] != "already-confirmed":
+        result.fail(
+            "already_confirmed.txt classifies as already-confirmed", f"got {already_confirmed['classification']}"
+        )
+    if already_confirmed["suggested_status"] != "confirmed-removed":
+        result.fail(
+            "already-confirmed suggests status confirmed-removed", f"got {already_confirmed['suggested_status']}"
+        )
+
+    rejection = _classify_fixture("rejection.txt")
+    if verbose:
+        print(f"  rejection.txt -> {rejection}")
+    if rejection["classification"] != "rejection":
+        result.fail("rejection.txt classifies as rejection", f"got {rejection['classification']}")
+    if rejection["suggested_status"] != "failed":
+        result.fail("rejection suggests status failed", f"got {rejection['suggested_status']}")
+
+    unrelated = _classify_fixture("unrelated.txt")
+    if verbose:
+        print(f"  unrelated.txt -> {unrelated}")
+    if unrelated["classification"] != "unrelated":
+        result.fail("unrelated.txt classifies as unrelated", f"got {unrelated['classification']}")
+    if unrelated["suggested_status"] is not None:
+        result.fail("unrelated suggests no status change", f"got {unrelated['suggested_status']}")
+
+
+def _check_confirmation_apply(result: EvalResult, verbose: bool) -> None:
+    """--apply path against a temp store, seeded via upsert() (eval-06's pattern)."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        os.environ["QUIETLINE_CASE_STORE"] = _tmpstore(tmp_dir)
+        cs_mod.CASE_STORE_PATH = Path(_tmpstore(tmp_dir))
+
+        cs_mod.upsert({"broker_id": "whitepages", "status": "awaiting-confirmation", "created_at": _now()})
+        cs_mod.upsert({"broker_id": "spokeo", "status": "awaiting-confirmation", "created_at": _now()})
+
+        already_result = _run_confirmation_apply(
+            FIXTURES_DIR / "already_confirmed.txt", "whitepages", _tmpstore(tmp_dir)
+        )
+        if verbose:
+            print(f"  --apply (already-confirmed) stdout:\n{already_result.stdout}")
+            print(f"  --apply (already-confirmed) stderr:\n{already_result.stderr}")
+        if already_result.returncode != 0:
+            result.fail("confirmation.py --apply exits 0 for already-confirmed", already_result.stderr)
+
+        after_whitepages = cs_mod.get("whitepages")
+        if after_whitepages is None or after_whitepages.get("status") != "confirmed-removed":
+            result.fail(
+                "--apply moves already-confirmed case to confirmed-removed",
+                f"got {after_whitepages.get('status') if after_whitepages else None}",
+            )
+
+        rejection_result = _run_confirmation_apply(FIXTURES_DIR / "rejection.txt", "spokeo", _tmpstore(tmp_dir))
+        if verbose:
+            print(f"  --apply (rejection) stdout:\n{rejection_result.stdout}")
+        if rejection_result.returncode != 0:
+            result.fail("confirmation.py --apply exits 0 for rejection", rejection_result.stderr)
+
+        after_spokeo = cs_mod.get("spokeo")
+        if after_spokeo is None or after_spokeo.get("status") != "failed":
+            result.fail(
+                "--apply moves rejection case to failed",
+                f"got {after_spokeo.get('status') if after_spokeo else None}",
+            )
+
+
+def run_eval_07_confirmation(verbose: bool) -> EvalResult:
+    """
+    Confirmation-email classification: each fixture classifies correctly,
+    confirm_link.html extracts the real https confirmation URL (never the
+    javascript:/relative decoys), confirm_link_http_only.html falls through
+    to 'unrelated' (documented decoy-handling behavior — see
+    scripts/confirmation.py's module docstring), and --apply moves a case to
+    the suggested status via case_store.mark.
+    """
+    result = EvalResult("eval-07", "Confirmation-email classification", release_blocking=False)
+    _check_fixture_classifications(result, verbose)
+    _check_confirmation_apply(result, verbose)
+    return result
+
+
 EVAL_RUNNERS = {
     "eval-01-discovery": run_eval_01_discovery,
     "eval-02-mechanism-routing": run_eval_02_mechanism_routing,
@@ -479,6 +634,7 @@ EVAL_RUNNERS = {
     "eval-04-deadline-escalation": run_eval_04_deadlines,
     "eval-05-safety-own-data-only": run_eval_05_safety,
     "eval-06-action-queue": run_eval_06_action_queue,
+    "eval-07-confirmation-classification": run_eval_07_confirmation,
 }
 
 
