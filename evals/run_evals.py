@@ -18,10 +18,11 @@ Usage:
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 # Make scripts importable
@@ -34,6 +35,7 @@ import deadlines as dl_mod
 import action_queue as aq_mod
 import confirmation as conf_mod
 import diff_scan as diff_mod
+import render_email as render_mod
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
@@ -866,6 +868,128 @@ def run_eval_08_monitoring_refile(verbose: bool) -> EvalResult:
     return result
 
 
+def run_eval_09_email_rendering(verbose: bool) -> EvalResult:
+    """
+    Email rendering across template x jurisdiction, plus regression coverage
+    for the escalation-template bug (render_email.py used to populate only
+    'statutory_language', leaving {escalation_language} as a literal,
+    unresolved placeholder in every rendered escalation email).
+
+    For each (template, state) in {deletion, escalation} x {CA, TX, None
+    (default)}: subject is non-empty, body contains the jurisdiction's
+    statutory/escalation sentence from data/jurisdictions.json (formatted
+    with the same submitted_date render() used), and body has zero
+    unresolved {word} placeholders. Also checks: radaris (email-request
+    mechanism) resolves 'to' from its opt_out_email; an unknown broker id
+    raises ValueError; and rendering succeeds for an owner-group member
+    broker id (intelius, a peopleconnect member).
+    """
+    result = EvalResult(
+        "eval-09",
+        "Email rendering: template x jurisdiction, radaris to-address, unknown broker, owner-group member",
+        release_blocking=False,
+    )
+
+    jurisdictions = render_mod._load_json(render_mod.JURISDICTIONS_PATH)["jurisdictions"]
+    today = date.today().isoformat()
+
+    for template_type in ("deletion", "escalation"):
+        for state in ("CA", "TX", None):
+            rendered = render_mod.render(
+                template_type=template_type,
+                broker_id="whitepages",
+                state=state,
+                user_name="Jane Test",
+                phone_numbers=["+15551234567"],
+                user_email="jane@example.com",
+            )
+            if verbose:
+                print(f"  [{template_type}/{state}] subject={rendered['subject']!r}")
+
+            if not rendered["subject"].strip():
+                result.fail(f"{template_type}/{state}: rendered subject is non-empty")
+
+            jur = jurisdictions.get((state or "").upper()) or jurisdictions["default"]
+            raw_language = jur.get(f"{template_type}_language") or jur.get("statutory_language", "")
+            expected_language = raw_language.format(submitted_date=today)
+
+            if expected_language not in rendered["body"]:
+                result.fail(
+                    f"{template_type}/{state}: body contains the jurisdiction's {template_type}_language sentence",
+                    f"expected substring not found (first 80 chars): {expected_language[:80]!r}",
+                )
+
+            # Regression trap: the pre-fix code only populated 'statutory_language'
+            # in the variables dict, never 'escalation_language', so every rendered
+            # escalation email contained the literal text '{escalation_language}'.
+            # This assertion fails against that code and passes only once both
+            # template placeholders are populated.
+            leftover = re.search(r"\{\w+\}", rendered["body"])
+            if leftover is not None:
+                result.fail(
+                    f"{template_type}/{state}: body has zero unresolved {{placeholder}}s",
+                    f"found leftover placeholder: {leftover.group(0)!r}",
+                )
+
+    # radaris is an email-request broker with no opt_out_url; 'to' must resolve
+    # from its opt_out_email (data/brokers.json), not a fabricated privacy@ address.
+    radaris_rendered = render_mod.render(
+        template_type="deletion",
+        broker_id="radaris",
+        state="CA",
+        user_name="Jane Test",
+        phone_numbers=["+15551234567"],
+        user_email="jane@example.com",
+    )
+    brokers_data = render_mod._load_json(render_mod.BROKERS_PATH)
+    radaris_broker = render_mod._get_broker("radaris", brokers_data)
+    expected_to = radaris_broker.get("opt_out_email") if radaris_broker else None
+    if verbose:
+        print(f"  radaris 'to': {radaris_rendered['to']!r} (expected {expected_to!r})")
+    if not expected_to or radaris_rendered["to"] != expected_to:
+        result.fail(
+            "radaris 'to' resolves from its opt_out_email in data/brokers.json",
+            f"got {radaris_rendered['to']!r}, expected {expected_to!r}",
+        )
+
+    # An unknown broker id must error clearly (ValueError), not render garbage.
+    try:
+        render_mod.render(
+            template_type="deletion",
+            broker_id="not-a-real-broker-id",
+            state="CA",
+            user_name="Jane Test",
+            phone_numbers=["+15551234567"],
+            user_email="jane@example.com",
+        )
+        result.fail("render() raises for an unknown broker id", "no exception was raised")
+    except ValueError:
+        pass
+    except Exception as e:  # noqa: BLE001 - intentionally broad to report wrong-exception-type failures
+        result.fail("render() raises ValueError (not some other exception) for an unknown broker id", repr(e))
+
+    # Owner-group member broker id (intelius, a peopleconnect member per
+    # data/brokers.json's owner_groups) still renders correctly on its own —
+    # action_queue.py's owner-group collapse is a display concern, not a
+    # constraint on render_email.py.
+    intelius_rendered = render_mod.render(
+        template_type="deletion",
+        broker_id="intelius",
+        state="CA",
+        user_name="Jane Test",
+        phone_numbers=["+15551234567"],
+        user_email="jane@example.com",
+    )
+    if verbose:
+        print(f"  intelius subject={intelius_rendered['subject']!r}")
+    if not intelius_rendered["subject"].strip():
+        result.fail("intelius (owner-group member) renders a non-empty subject")
+    if re.search(r"\{\w+\}", intelius_rendered["body"]) is not None:
+        result.fail("intelius (owner-group member) body has zero unresolved placeholders", intelius_rendered["body"])
+
+    return result
+
+
 EVAL_RUNNERS = {
     "eval-01-discovery": run_eval_01_discovery,
     "eval-02-mechanism-routing": run_eval_02_mechanism_routing,
@@ -875,6 +999,7 @@ EVAL_RUNNERS = {
     "eval-06-action-queue": run_eval_06_action_queue,
     "eval-07-confirmation-classification": run_eval_07_confirmation,
     "eval-08-monitoring-refile": run_eval_08_monitoring_refile,
+    "eval-09-email-rendering": run_eval_09_email_rendering,
 }
 
 

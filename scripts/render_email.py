@@ -91,6 +91,7 @@ def render(
 
     jur = _get_jurisdiction(state, jurisdictions)
     statutory_language = jur.get(f"{template_type}_language") or jur.get("statutory_language", "")
+    rendered_language = statutory_language.format(submitted_date=submitted_date or date.today().isoformat())
     today = date.today().isoformat()
 
     variables = {
@@ -98,7 +99,13 @@ def render(
         "full_name": user_name,
         "phone_numbers": ", ".join(phone_numbers),
         "listing_url": listing_url or "(not found — please search your records for my name and phone number)",
-        "statutory_language": statutory_language.format(submitted_date=submitted_date or today),
+        # Both keys are populated with the same jurisdiction-parameterized sentence:
+        # deletion_email.md references {statutory_language}, escalation_email.md
+        # references {escalation_language}. jur.get(f"{template_type}_language") already
+        # selects the right sentence for the current template_type, so both placeholders
+        # resolve correctly regardless of which template is being rendered.
+        "statutory_language": rendered_language,
+        "escalation_language": rendered_language,
         "submitted_date": submitted_date or today,
         "deadline_date": deadline_date or "",
         "days_overdue": str(days_overdue or 0),

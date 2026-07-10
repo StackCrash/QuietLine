@@ -1,5 +1,5 @@
 {
-  "description": "QuietLine eval harness \u2014 8 test cases covering correctness, idempotency, deadline logic, the SAFE-1 safety gate, the human-action queue, confirmation-email classification, and the reappeared/refile monitoring flow (including the rescan.py --apply orchestration end to end).",
+  "description": "QuietLine eval harness \u2014 9 test cases covering correctness, idempotency, deadline logic, the SAFE-1 safety gate, the human-action queue, confirmation-email classification, the reappeared/refile monitoring flow (including the rescan.py --apply orchestration end to end), and email-template rendering across jurisdictions.",
   "schema_version": "1.0",
   "notes": "Run with: python evals/run_evals.py. Eval #5 (safety) is a hard gate \u2014 non-zero exit if it fails.",
   "evals": [
@@ -334,6 +334,39 @@
         {
           "description": "rescan.py --apply writes last_scan_date/next_scan_date at the store keys build_dashboard.py reads, ~90 days apart",
           "check": "store['last_scan_date'] and store['next_scan_date'] and 85 <= (next_scan_date - last_scan_date).days <= 95"
+        }
+      ],
+      "release_blocking": false
+    },
+    {
+      "id": "eval-09-email-rendering",
+      "name": "Email rendering: template x jurisdiction, radaris to-address, unknown broker, owner-group member",
+      "description": "scripts/render_email.py renders both deletion and escalation templates correctly across CA, TX, and the default (unset-state) jurisdiction. Regression test for the escalation-template bug: assets/templates/escalation_email.md references {escalation_language}, but render_email.py previously only populated the 'statutory_language' key in its variables dict, so every rendered escalation email contained the literal, unresolved text '{escalation_language}'. For each (template, state) combination: subject is non-empty, body contains the jurisdiction's statutory (deletion) or escalation (escalation) sentence from data/jurisdictions.json, and body has zero unresolved {word} placeholders (re.search(r'\\{\\w+\\}', body) is None) — this last assertion fails against the pre-fix code. Also asserts radaris (an email-request broker with no opt_out_url) resolves its 'to' address from data/brokers.json's opt_out_email field, an unknown broker id raises a clear ValueError, and rendering succeeds for an owner-group member broker id (intelius, a peopleconnect member).",
+      "script": "render_email.py",
+      "assertions": [
+        {
+          "description": "For each of deletion/escalation x CA/TX/default, the rendered subject is non-empty",
+          "check": "render(template_type, 'whitepages', state, ...)['subject'].strip() != ''"
+        },
+        {
+          "description": "The rendered body contains the jurisdiction's {template_type}_language sentence from data/jurisdictions.json, formatted with the actual submitted_date",
+          "check": "jurisdictions[state or 'default'][f'{template_type}_language'].format(submitted_date=today) in body"
+        },
+        {
+          "description": "Regression trap: the rendered body has zero unresolved {word} placeholders (fails on the pre-fix code, which left a literal '{escalation_language}' in every escalation email)",
+          "check": "re.search(r'\\{\\w+\\}', body) is None"
+        },
+        {
+          "description": "radaris (email-request mechanism, no opt_out_url) resolves 'to' from its opt_out_email in data/brokers.json",
+          "check": "render('deletion', 'radaris', 'CA', ...)['to'] == brokers['radaris']['opt_out_email']"
+        },
+        {
+          "description": "An unknown broker id raises ValueError rather than rendering",
+          "check": "raises ValueError for render(template_type='deletion', broker_id='not-a-real-broker-id', ...)"
+        },
+        {
+          "description": "Rendering succeeds for an owner-group member broker id (intelius, a peopleconnect member) with a non-empty subject and no unresolved placeholders",
+          "check": "render('deletion', 'intelius', 'CA', ...)['subject'].strip() != '' and re.search(r'\\{\\w+\\}', body) is None"
         }
       ],
       "release_blocking": false

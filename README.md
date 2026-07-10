@@ -225,6 +225,8 @@ wc -l SKILL.md
 | Virginia | VCDPA | 45 days | — |
 | Colorado | CPA | 45 days | — |
 | Connecticut | CTDPA | 45 days | — |
+| Oregon | OCPA (ORS 646A.570-646A.589) | 45 days | — |
+| New Jersey | NJDPA (P.L. 2023, c.266) | 45 days | — |
 | All others | FCRA + broker privacy policy | 45 days (norm) | — |
 
 To add a new state: add an entry to `data/jurisdictions.json` and a corresponding section to `references/jurisdictions/state-statutes.md`.

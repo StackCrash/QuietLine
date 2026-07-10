@@ -56,6 +56,28 @@
       "escalation_language": "This is a follow-up to my deletion request submitted on {submitted_date}. Under the CTDPA, you are required to respond within 45 days. That deadline has passed. Please confirm immediate deletion.",
       "notes": null
     },
+    "OR": {
+      "name": "Oregon",
+      "statutes": ["Oregon Consumer Privacy Act (OCPA, ORS 646A.570-646A.589)"],
+      "response_deadline_days": 45,
+      "drop_eligible": false,
+      "deletion_right": true,
+      "opt_out_right": true,
+      "statutory_language": "Pursuant to the Oregon Consumer Privacy Act (ORS 646A.570-646A.589), I request that you delete all personal information you have collected about me, including my name, phone number(s), and associated records. Please confirm deletion within 45 days.",
+      "escalation_language": "This is a follow-up to my deletion request submitted on {submitted_date}. Under the Oregon Consumer Privacy Act, you are required to respond within 45 days. That deadline has passed. Please confirm immediate deletion or I will file a complaint with the Oregon Attorney General's office.",
+      "notes": "OCPA effective July 1, 2024 (July 1, 2025 for nonprofits); 45-day response, extendable once by 45 additional days with notice to the consumer. Oregon separately runs its own data-broker registry (ORS 646A.593, administered by the Division of Financial Regulation, registration mandatory since Jan. 1, 2024) — distinct from the OCPA consumer-rights statute; the registry lists brokers' own opt-out instructions and is a useful discovery source but is not a CA-DROP-style one-shot deletion mechanism."
+    },
+    "NJ": {
+      "name": "New Jersey",
+      "statutes": ["New Jersey Data Privacy Act (NJDPA, P.L. 2023, c.266 / S332)"],
+      "response_deadline_days": 45,
+      "drop_eligible": false,
+      "deletion_right": true,
+      "opt_out_right": true,
+      "statutory_language": "Pursuant to the New Jersey Data Privacy Act (P.L. 2023, c.266), I request that you delete all personal information you have collected about me, including my name, phone number(s), and associated records. Please confirm deletion within 45 days.",
+      "escalation_language": "This is a follow-up to my deletion request submitted on {submitted_date}. Under the New Jersey Data Privacy Act, you are required to respond within 45 days. That deadline has passed. Please confirm immediate deletion.",
+      "notes": "NJDPA effective January 15, 2025; 45-day response, extendable once by 45 additional days with notice to the consumer."
+    },
     "default": {
       "name": "United States (general)",
       "statutes": ["FCRA (15 U.S.C. §1681 et seq.)"],

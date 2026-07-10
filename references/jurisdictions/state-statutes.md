@@ -8,6 +8,8 @@ This file provides per-state statutory language, response deadlines, and escalat
 - [Virginia (VA)](#virginia-va)
 - [Colorado (CO)](#colorado-co)
 - [Connecticut (CT)](#connecticut-ct)
+- [Oregon (OR)](#oregon-or)
+- [New Jersey (NJ)](#new-jersey-nj)
 - [All other states (default)](#all-other-states-default)
 
 All statutory language and deadline parameters are also machine-readable in `data/jurisdictions.json` (source of truth for `deadlines.py` and `render_email.py`). This file is the human-readable companion.
@@ -91,6 +93,40 @@ All statutory language and deadline parameters are also machine-readable in `dat
 > This is a follow-up to my deletion request submitted on {submitted_date}. Under the CTDPA, you are required to respond within 45 days. That deadline has passed. Please confirm immediate deletion.
 
 **Enforcement:** Connecticut Attorney General — https://portal.ct.gov/AG
+
+---
+
+## Oregon (OR)
+
+**Statutes:** Oregon Consumer Privacy Act (OCPA, ORS 646A.570-646A.589, effective July 1, 2024; July 1, 2025 for nonprofits)
+**Response deadline:** 45 days (extendable once by 45 additional days with notice to the consumer)
+**CA DROP eligible:** No
+
+**Deletion language:**
+> Pursuant to the Oregon Consumer Privacy Act (ORS 646A.570-646A.589), I request that you delete all personal information you have collected about me, including my name, phone number(s), and associated records. Please confirm deletion within 45 days.
+
+**Escalation language:**
+> This is a follow-up to my deletion request submitted on {submitted_date}. Under the Oregon Consumer Privacy Act, you are required to respond within 45 days. That deadline has passed. Please confirm immediate deletion or I will file a complaint with the Oregon Attorney General's office.
+
+**Enforcement:** Oregon Attorney General / Department of Justice — https://www.doj.state.or.us/consumer-protection/
+
+**Notes:** Oregon separately operates its own data-broker registry (ORS 646A.593, administered by the Division of Financial Regulation, registration mandatory since January 1, 2024, at https://dfr.oregon.gov/business/licensing/data-broker-registry/). This registry is a discovery source (it lists registered brokers and their own opt-out instructions) — it is not an OCPA consumer-rights mechanism and not a CA-DROP-style one-shot deletion path.
+
+---
+
+## New Jersey (NJ)
+
+**Statutes:** New Jersey Data Privacy Act (NJDPA, P.L. 2023, c.266 / S332, effective January 15, 2025)
+**Response deadline:** 45 days (extendable once by 45 additional days with notice to the consumer)
+**CA DROP eligible:** No
+
+**Deletion language:**
+> Pursuant to the New Jersey Data Privacy Act (P.L. 2023, c.266), I request that you delete all personal information you have collected about me, including my name, phone number(s), and associated records. Please confirm deletion within 45 days.
+
+**Escalation language:**
+> This is a follow-up to my deletion request submitted on {submitted_date}. Under the New Jersey Data Privacy Act, you are required to respond within 45 days. That deadline has passed. Please confirm immediate deletion.
+
+**Enforcement:** New Jersey Division of Consumer Affairs — https://www.njconsumeraffairs.gov
 
 ---
 
