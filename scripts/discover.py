@@ -14,6 +14,8 @@ In --dry-run mode, returns results without real web lookups.
 
 import argparse
 import json
+import os
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -119,6 +121,33 @@ def discover(
     return report
 
 
+def _ownership_affirmed(affirm_flag: bool) -> bool:
+    """
+    SAFE-1 gate: discovery may proceed only if ownership has been affirmed,
+    satisfied by ANY of:
+      - the --affirm-ownership CLI flag,
+      - env QUIETLINE_AFFIRMED=1,
+      - a non-null 'affirmation' record already in the case store.
+    """
+    if affirm_flag:
+        return True
+    if os.environ.get("QUIETLINE_AFFIRMED") == "1":
+        return True
+
+    # Lazy import, and only after any store-related env handling above: this
+    # module has no --case-store flag of its own, so QUIETLINE_CASE_STORE (if
+    # set by the caller) is already in place by the time we get here.
+    # case_store.py binds CASE_STORE_PATH from that env var at import time
+    # (see diff_scan.py's / rescan.py's late-import pattern for the same
+    # reason). A missing store file just means no affirmation has been
+    # recorded yet, not an error.
+    sys.path.insert(0, str(Path(__file__).parent))
+    import case_store as cs_mod  # noqa: PLC0415
+
+    store = cs_mod._load_store()
+    return store.get("affirmation") is not None
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="QuietLine discovery scan")
     parser.add_argument("--name", required=True, help="Full legal name")
@@ -130,12 +159,32 @@ def main() -> None:
         help="Return results without live web searches (for testing)",
     )
     parser.add_argument(
+        "--affirm-ownership",
+        action="store_true",
+        help="Affirm this discovery request is for your own data (SAFE-1)",
+    )
+    parser.add_argument(
         "--output",
         choices=["json", "table"],
         default="json",
         help="Output format",
     )
     args = parser.parse_args()
+
+    if not _ownership_affirmed(args.affirm_ownership):
+        print(
+            json.dumps(
+                {
+                    "error": "ownership-affirmation-required",
+                    "hint": (
+                        "Affirm you are requesting removal of YOUR OWN data: run "
+                        "case_store.py mark-affirmation, or pass --affirm-ownership."
+                    ),
+                }
+            ),
+            file=sys.stderr,
+        )
+        sys.exit(3)
 
     report = discover(name=args.name, phone=args.phone, state=args.state, dry_run=args.dry_run)
 

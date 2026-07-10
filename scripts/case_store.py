@@ -11,6 +11,14 @@ already-completed removals. The sole exception is the Phase-5 monitoring
 transition 'confirmed-removed' -> 'reappeared' (a listing came back), which is
 allowed so the case can then be refiled ('reappeared' -> 'submitted') like a
 normal, non-terminal case.
+
+SAFE-1 enforcement: upsert() also refuses any transition TO 'submitted' or
+'awaiting-confirmation' unless the store's top-level 'affirmation' record is
+set (recorded via mark_affirmation() / `case_store.py mark-affirmation`).
+Statuses 'discovered', 'awaiting-user', 'failed', 'reappeared', and
+'confirmed-removed' remain ungated — Phase 0 profile/discovery ordering
+precedes affirmation recording, and only submission-shaped transitions carry
+real-world consequence.
 """
 
 import argparse
@@ -32,6 +40,9 @@ CASE_STORE_PATH = Path(os.environ.get("QUIETLINE_CASE_STORE", Path.home() / ".qu
 SCHEMA_PATH = Path(__file__).parent.parent / "schemas" / "case_record.json"
 
 TERMINAL_STATUSES = {"confirmed-removed"}
+# SAFE-1: transitions TO these statuses require a recorded ownership
+# affirmation (see upsert()'s gate below).
+GATED_STATUSES = {"submitted", "awaiting-confirmation"}
 STATUS_ORDER = [
     "discovered",
     "submitted",
@@ -105,10 +116,33 @@ def upsert(record: dict) -> dict:
     `record` may be a partial patch (as sent by `mark()`) rather than a full
     case record — schema validation runs after merging against any existing
     record, against the complete object that actually gets persisted.
+
+    SAFE-1 gate: a transition TO a status in GATED_STATUSES ('submitted',
+    'awaiting-confirmation') is refused unless the store has a non-null
+    'affirmation' record. An existing case is returned unchanged (mirroring
+    the idempotency guard's print-and-return-existing style below); a
+    brand-new case requested directly at a gated status is never created —
+    mark() always operates on a pre-existing case (it raises ValueError
+    itself if the case doesn't exist yet), so this branch only fires for a
+    caller that skips mark() and calls upsert() directly.
     """
     broker_id = record["broker_id"]
+    new_status = record.get("status")
     store = _load_store()
     existing = store["cases"].get(broker_id)
+
+    if new_status in GATED_STATUSES and store.get("affirmation") is None:
+        print(
+            f"SAFE-1: ownership affirmation required before submitting '{broker_id}' "
+            f"(status → '{new_status}'). Run `case_store.py mark-affirmation` first.",
+            file=sys.stderr,
+        )
+        if existing is not None:
+            return existing
+        raise ValueError(
+            f"Cannot create a new case for '{broker_id}' directly at status '{new_status}' "
+            "without an ownership affirmation on record (case_store.py mark-affirmation)."
+        )
 
     if existing and existing.get("status") in TERMINAL_STATUSES:
         new_status = record.get("status", existing["status"])

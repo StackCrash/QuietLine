@@ -25,7 +25,9 @@ QuietLine is a semi-automated caseworker: it handles ~80% of the data-broker rem
 Before discovery, form-filling, or any submission:
 1. Ask the user to confirm the name, phone number, and identity details belong to **them**.
 2. If the request looks like it targets a third party (e.g., "find my ex's number," "look up my neighbor"), **refuse** and explain why. This is a release-blocking safety gate; see `evals/evals.json` eval #5.
-3. Record the ownership affirmation (timestamp + session ID) in the case store via `python scripts/case_store.py mark-affirmation`.
+3. Immediately after the user affirms, record the ownership affirmation in the case store via `python scripts/case_store.py mark-affirmation` — do this before running Phase 1 discovery.
+
+This gate is hard-enforced by the scripts, not just this prose: `discover.py` exits 3 (printing no broker rows) unless ownership affirmation is given via `--affirm-ownership`, `QUIETLINE_AFFIRMED=1`, or a recorded affirmation, and `case_store.py` refuses to transition any case to `submitted`/`awaiting-confirmation` until `mark-affirmation` has run.
 
 **SAFE-2 — No anti-bot circumvention**
 

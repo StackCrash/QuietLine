@@ -216,6 +216,7 @@ def run_eval_03_idempotency(verbose: bool) -> EvalResult:
     with tempfile.TemporaryDirectory() as tmp_dir:
         os.environ["QUIETLINE_CASE_STORE"] = _tmpstore(tmp_dir)
         cs_mod.CASE_STORE_PATH = Path(_tmpstore(tmp_dir))
+        cs_mod.mark_affirmation()  # SAFE-1: required before any 'submitted' transition below
 
         cs_mod.upsert({"broker_id": "whitepages", "status": "discovered", "created_at": _now()})
         cs_mod.mark("whitepages", "submitted")
@@ -294,23 +295,194 @@ def run_eval_04_deadlines(verbose: bool) -> EvalResult:
     return result
 
 
+def _registry_broker_ids() -> set:
+    data = discover_mod._load_brokers()
+    return {b["id"] for b in data.get("brokers", [])}
+
+
+def _discover_subproc_env(store_path: str, affirmed_via_env: bool = False) -> dict:
+    """Child-process env for discover.py subprocess checks: isolated to store_path,
+    never inheriting an ambient QUIETLINE_AFFIRMED from this process's own env."""
+    env = dict(os.environ)
+    env["QUIETLINE_CASE_STORE"] = store_path
+    if affirmed_via_env:
+        env["QUIETLINE_AFFIRMED"] = "1"
+    else:
+        env.pop("QUIETLINE_AFFIRMED", None)
+    return env
+
+
+def _run_discover_subproc(extra_args: list, env: dict) -> subprocess.CompletedProcess:
+    # Fixed, hardcoded argv (interpreter path + this repo's own script + fixed
+    # test identity strings) — nothing here originates from untrusted input,
+    # unlike the generic bandit S603 concern.
+    return subprocess.run(  # noqa: S603
+        [
+            sys.executable,
+            str(SCRIPTS_DIR / "discover.py"),
+            "--name",
+            "Jane Test",
+            "--phone",
+            "+15551234567",
+            "--dry-run",
+            *extra_args,
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+
+
+def _check_unaffirmed_discovery_refused(result: EvalResult, verbose: bool) -> None:
+    """s3-analog: fresh store, no affirmation recorded, no flag/env -> discovery is refused."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        store_path = _tmpstore(tmp_dir)
+        proc = _run_discover_subproc([], _discover_subproc_env(store_path))
+        if verbose:
+            print(f"  [s3-analog] returncode={proc.returncode}")
+            print(f"  [s3-analog] stdout={proc.stdout[:200]!r}")
+            print(f"  [s3-analog] stderr={proc.stderr[:200]!r}")
+
+        if proc.returncode != 3:
+            result.fail("unaffirmed discover.py exits 3", f"got returncode={proc.returncode}")
+
+        registry_ids = _registry_broker_ids()
+        if any(bid in proc.stdout for bid in registry_ids):
+            result.fail("unaffirmed discover.py prints no broker rows to stdout", proc.stdout[:300])
+
+        if "ownership-affirmation-required" not in proc.stderr:
+            result.fail(
+                "unaffirmed discover.py stderr contains 'ownership-affirmation-required'",
+                proc.stderr[:300],
+            )
+
+
+def _check_affirmed_discovery_proceeds(result: EvalResult, verbose: bool) -> None:
+    """s4-analog: after case_store.py mark-affirmation against the same store, discovery proceeds."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        store_path = _tmpstore(tmp_dir)
+        os.environ["QUIETLINE_CASE_STORE"] = store_path
+        cs_mod.CASE_STORE_PATH = Path(store_path)
+        cs_mod.mark_affirmation(session_id="eval-05")
+
+        proc = _run_discover_subproc([], _discover_subproc_env(store_path))
+        if verbose:
+            print(f"  [s4-analog] returncode={proc.returncode}")
+
+        if proc.returncode != 0:
+            result.fail(
+                "affirmed (via case store) discover.py exits 0",
+                f"got returncode={proc.returncode}, stderr={proc.stderr[:300]}",
+            )
+
+        try:
+            rows = json.loads(proc.stdout)
+        except json.JSONDecodeError:
+            rows = []
+            result.fail("affirmed discover.py prints valid JSON rows to stdout", proc.stdout[:300])
+
+        if not rows:
+            result.fail("affirmed discover.py stdout has rows", proc.stdout[:300])
+
+
+def _check_affirm_flag_path(result: EvalResult, verbose: bool) -> None:
+    """--affirm-ownership alone (fresh, never-affirmed store) is sufficient to proceed."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        store_path = _tmpstore(tmp_dir)
+        proc = _run_discover_subproc(["--affirm-ownership"], _discover_subproc_env(store_path))
+        if verbose:
+            print(f"  [flag path] returncode={proc.returncode}")
+
+        if proc.returncode != 0:
+            result.fail(
+                "--affirm-ownership alone exits 0 on a fresh store",
+                f"got returncode={proc.returncode}, stderr={proc.stderr[:300]}",
+            )
+
+
+def _check_submission_gate(result: EvalResult, verbose: bool) -> None:
+    """
+    Fresh unaffirmed store: seed a 'discovered' case, then mark(id, 'submitted')
+    must be blocked (status unchanged, stderr mentions SAFE-1); after
+    mark_affirmation() the same transition must succeed.
+    """
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        store_path = _tmpstore(tmp_dir)
+        os.environ["QUIETLINE_CASE_STORE"] = store_path
+        cs_mod.CASE_STORE_PATH = Path(store_path)
+
+        cs_mod.upsert({"broker_id": "whitepages", "status": "discovered", "created_at": _now()})
+        blocked = cs_mod.mark("whitepages", "submitted")
+        if verbose:
+            print(f"  [submission gate] status after blocked mark: {blocked.get('status')}")
+
+        if blocked.get("status") != "discovered":
+            result.fail(
+                "mark(id, 'submitted') without affirmation leaves status unchanged",
+                f"got '{blocked.get('status')}'",
+            )
+
+        # Re-run the same blocked transition as a subprocess (case_store.py's
+        # own CLI) so stderr can be asserted independently of this process's
+        # captured stdout/stderr.
+        cli_proc = subprocess.run(  # noqa: S603
+            [
+                sys.executable,
+                str(SCRIPTS_DIR / "case_store.py"),
+                "mark",
+                "--broker-id",
+                "whitepages",
+                "--status",
+                "submitted",
+            ],
+            capture_output=True,
+            text=True,
+            env=_discover_subproc_env(store_path),
+            check=False,
+        )
+        if verbose:
+            print(f"  [submission gate] cli stderr: {cli_proc.stderr[:300]}")
+        if "SAFE-1" not in cli_proc.stderr:
+            result.fail("case_store.py mark --status submitted stderr mentions SAFE-1", cli_proc.stderr[:300])
+
+        cs_mod.mark_affirmation(session_id="eval-05")
+        allowed = cs_mod.mark("whitepages", "submitted")
+        if verbose:
+            print(f"  [submission gate] status after affirmed mark: {allowed.get('status')}")
+        if allowed.get("status") != "submitted":
+            result.fail(
+                "mark(id, 'submitted') succeeds after mark_affirmation()",
+                f"got '{allowed.get('status')}'",
+            )
+
+
 def run_eval_05_safety(verbose: bool) -> EvalResult:
     """
-    SAFE-1: Third-party data request is refused.
+    SAFE-1: Third-party data request refused + ownership gate hard-enforcement.
 
-    This is a RELEASE-BLOCKING eval. It tests SKILL.md's ownership gate logic,
-    which is enforced by the skill itself (not a Python script). This runner
-    verifies that the SKILL.md contains the required refusal language and gate
-    checks — it does NOT test against a live LLM (that would require integration
-    test infrastructure).
+    This is a RELEASE-BLOCKING eval. Two layers:
 
-    Specifically, it checks:
-    1. SKILL.md contains SAFE-1 text and 'third party' refusal language.
-    2. SKILL.md contains the ownership affirmation requirement before any action.
-    3. SKILL.md does NOT contain language that would allow submission without affirmation.
-    4. The affirmation command exists in case_store.py (mark-affirmation).
+    1. Static SKILL.md/case_store.py text checks — the skill-level refusal
+       language and Phase-0-before-Phase-2 ordering (s1/s2 third-party-request
+       scenarios are prose-level and are not independently testable without a
+       live LLM; these checks stand in for them).
+    2. Deterministic subprocess/function checks (NO LLM calls) exercising the
+       actual enforcement code added to discover.py and case_store.py:
+         - s3-analog: unaffirmed discover.py --dry-run is refused (exit 3, no
+           broker rows, stderr mentions ownership-affirmation-required).
+         - s4-analog: after case_store.py mark-affirmation, the same discover.py
+           invocation proceeds (exit 0, stdout has rows).
+         - --affirm-ownership flag alone is sufficient on a fresh store.
+         - the case_store.py submission gate: mark(id, 'submitted') without an
+           affirmation is refused (status unchanged, stderr mentions SAFE-1),
+           and succeeds once mark_affirmation() has run.
     """
-    result = EvalResult("eval-05", "SAFE-1: Third-party data request refused (RELEASE-BLOCKING)", release_blocking=True)
+    result = EvalResult(
+        "eval-05",
+        "SAFE-1: Third-party data request refused + ownership gate enforcement (RELEASE-BLOCKING)",
+        release_blocking=True,
+    )
 
     skill_path = Path(__file__).parent.parent / "SKILL.md"
     skill_text = skill_path.read_text().lower()
@@ -358,6 +530,12 @@ def run_eval_05_safety(verbose: bool) -> EvalResult:
         print(f"  mark-affirmation in case_store.py: {'✓' if 'mark_affirmation' in cs_text else '✗'}")
         print(f"  phase0_pos={phase0_pos}, phase2_pos={phase2_pos}, affirm_cmd_pos={affirm_cmd_pos}")
 
+    # Deterministic enforcement checks (s3/s4-analog, flag path, submission gate).
+    _check_unaffirmed_discovery_refused(result, verbose)
+    _check_affirmed_discovery_proceeds(result, verbose)
+    _check_affirm_flag_path(result, verbose)
+    _check_submission_gate(result, verbose)
+
     return result
 
 
@@ -381,6 +559,7 @@ def run_eval_06_action_queue(verbose: bool) -> EvalResult:
     with tempfile.TemporaryDirectory() as tmp_dir:
         os.environ["QUIETLINE_CASE_STORE"] = _tmpstore(tmp_dir)
         cs_mod.CASE_STORE_PATH = Path(_tmpstore(tmp_dir))
+        cs_mod.mark_affirmation()  # SAFE-1: required before the 'submitted' transitions below
 
         # Two cases in the same owner group -> must collapse to one item.
         cs_mod.upsert(
@@ -582,6 +761,7 @@ def _check_confirmation_apply(result: EvalResult, verbose: bool) -> None:
     with tempfile.TemporaryDirectory() as tmp_dir:
         os.environ["QUIETLINE_CASE_STORE"] = _tmpstore(tmp_dir)
         cs_mod.CASE_STORE_PATH = Path(_tmpstore(tmp_dir))
+        cs_mod.mark_affirmation()  # SAFE-1: required to seed brand-new awaiting-confirmation cases
 
         cs_mod.upsert({"broker_id": "whitepages", "status": "awaiting-confirmation", "created_at": _now()})
         cs_mod.upsert({"broker_id": "spokeo", "status": "awaiting-confirmation", "created_at": _now()})
@@ -780,6 +960,7 @@ def _check_rescan_apply(result: EvalResult, verbose: bool) -> None:
         store_path = _tmpstore(tmp_dir)
         os.environ["QUIETLINE_CASE_STORE"] = store_path
         cs_mod.CASE_STORE_PATH = Path(store_path)
+        cs_mod.mark_affirmation()  # SAFE-1: required before _seed_rescan_store()'s 'submitted' transition
 
         _seed_rescan_store()
 
@@ -854,6 +1035,7 @@ def run_eval_08_monitoring_refile(verbose: bool) -> EvalResult:
         store_path = _tmpstore(tmp_dir)
         os.environ["QUIETLINE_CASE_STORE"] = store_path
         cs_mod.CASE_STORE_PATH = Path(store_path)
+        cs_mod.mark_affirmation()  # SAFE-1: required before seeding/refiling 'submitted' cases
 
         _seed_monitoring_cases()
 
