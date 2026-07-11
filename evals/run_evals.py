@@ -540,12 +540,180 @@ def run_eval_05_safety(verbose: bool) -> EvalResult:
     return result
 
 
+def _seed_action_queue_cases(member_a: str, member_b: str) -> None:
+    """Seed eval-06's fixed set of cases: two owner-group members, a captcha
+    case, a phone-verification case, a submitted (waiting) case, and a
+    confirmed-removed case. Split out of run_eval_06_action_queue() to keep
+    that function's statement count down."""
+    # Two cases in the same owner group -> must collapse to one item.
+    cs_mod.upsert(
+        {
+            "broker_id": member_a,
+            "status": "awaiting-user",
+            "created_at": _now(),
+            "human_action_required": f"Complete opt-out for {member_a}.",
+        }
+    )
+    cs_mod.upsert(
+        {
+            "broker_id": member_b,
+            "status": "awaiting-user",
+            "created_at": _now(),
+            "human_action_required": f"Complete opt-out for {member_b}.",
+        }
+    )
+
+    # A captcha case — must rank before phone-verification.
+    cs_mod.upsert(
+        {
+            "broker_id": "advancedbackgroundchecks",
+            "status": "awaiting-user",
+            "created_at": _now(),
+            "mechanism": "captcha-handoff",
+            "human_action_required": "Solve CAPTCHA and click Submit.",
+        }
+    )
+
+    # A phone-verification case.
+    cs_mod.upsert(
+        {
+            "broker_id": "411-com",
+            "status": "awaiting-user",
+            "created_at": _now(),
+            "mechanism": "phone-verification",
+            "human_action_required": "Enter the code sent to your phone.",
+        }
+    )
+
+    # Excluded: submitted-and-waiting, and terminal (confirmed-removed).
+    cs_mod.upsert({"broker_id": "whitepages", "status": "discovered", "created_at": _now()})
+    cs_mod.mark("whitepages", "submitted")
+
+    cs_mod.upsert({"broker_id": "infotracer", "status": "discovered", "created_at": _now()})
+    cs_mod.mark("infotracer", "submitted")
+    cs_mod.mark("infotracer", "confirmed-removed")
+
+
+def _check_session_and_mark_batch(
+    result: EvalResult, brokers_data: dict, member_a: str, member_b: str, verbose: bool
+) -> None:
+    """
+    CAPTCHA batch solve-session view (build_session()/render_session_markdown())
+    plus case_store.py's mark_batch(), against eval-06's already-seeded temp
+    store (two owner-group awaiting-user cases, an awaiting-user captcha case
+    for advancedbackgroundchecks, an awaiting-user phone-verification case,
+    a submitted case, and a confirmed-removed case). Also regression-tests
+    the WAITING_STATUSES fix: after mark_batch moves the captcha case to
+    awaiting-confirmation, a queue/session rebuilt from the refreshed store
+    must no longer include it, even though its human_action_required note is
+    still attached. Split out of run_eval_06_action_queue() to keep that
+    function's statement count down.
+    """
+    # CAPTCHA solve-session view: only captcha-handoff items, renumbered
+    # 1..N independently of the full queue, each with a tab_hint and a
+    # links list of {broker_id, url} entries.
+    session_items = aq_mod.build_session(cs_mod.list_cases(), brokers_data)
+    if verbose:
+        print(f"  session_items: {session_items}")
+
+    if not session_items or any(it["mechanism"] != "captcha-handoff" for it in session_items):
+        result.fail(
+            "build_session() returns only captcha-handoff-mechanism items",
+            f"got mechanisms: {[it['mechanism'] for it in session_items]}",
+        )
+    if not session_items or session_items[0]["number"] != 1 or session_items[0]["tab_hint"] != "Tab 1":
+        result.fail(
+            "build_session() renumbers from 1 with tab_hint 'Tab 1' on the first item",
+            f"got {session_items[0] if session_items else None}",
+        )
+    if not all({"broker_id", "url"}.issubset(link.keys()) for it in session_items for link in it["links"]):
+        result.fail(
+            "every session item's links entries have broker_id and url keys",
+            f"got: {[it.get('links') for it in session_items]}",
+        )
+
+    expected_title = next(
+        (b["name"] for b in brokers_data.get("brokers", []) if b["id"] == "advancedbackgroundchecks"),
+        "advancedbackgroundchecks",
+    )
+    session_rendered = aq_mod.render_session_markdown(session_items)
+    if verbose:
+        print(session_rendered)
+    if "- [ ]" not in session_rendered:
+        result.fail("render_session_markdown() contains a checkbox line", session_rendered[:200])
+    if expected_title not in session_rendered:
+        result.fail(
+            "render_session_markdown() contains the expected broker title",
+            f"expected {expected_title!r} in rendered output",
+        )
+    empty_session_rendered = aq_mod.render_session_markdown([])
+    if "Nothing needs a CAPTCHA solve" not in empty_session_rendered:
+        result.fail(
+            "render_session_markdown([]) returns the empty-state message",
+            empty_session_rendered[:200],
+        )
+
+    # mark_batch(): two seeded awaiting-user broker ids move to
+    # awaiting-confirmation in one call, actor defaults to "user".
+    batch_result = cs_mod.mark_batch([member_a, member_b], "awaiting-confirmation")
+    if verbose:
+        print(f"  mark_batch succeeded={[r['broker_id'] for r in batch_result['succeeded']]}")
+    for bid in (member_a, member_b):
+        after = cs_mod.get(bid)
+        if after is None or after.get("status") != "awaiting-confirmation":
+            result.fail(
+                f"mark_batch() moves '{bid}' to awaiting-confirmation",
+                f"got {after.get('status') if after else None}",
+            )
+        elif after["audit_log"][-1].get("actor") != "user":
+            result.fail(
+                f"mark_batch()'s audit_log entry for '{bid}' has actor == 'user'",
+                f"got {after['audit_log'][-1]}",
+            )
+
+    # mark_batch() on a confirmed-removed broker: idempotency guard holds
+    # through the batch path (mark() never raises for this case, so it
+    # lands in "succeeded" with its status unchanged).
+    cs_mod.mark_batch(["infotracer"], "submitted")
+    infotracer_after = cs_mod.get("infotracer")
+    if infotracer_after is None or infotracer_after.get("status") != "confirmed-removed":
+        result.fail(
+            "mark_batch() on a confirmed-removed case leaves status unchanged (idempotency guard)",
+            f"got {infotracer_after.get('status') if infotracer_after else None}",
+        )
+
+    # Regression check: a case moved to awaiting-confirmation via mark_batch
+    # still carries its original human_action_required note, but must NOT
+    # re-appear in a queue/session rebuilt from the refreshed store — it's
+    # waiting on the broker now, not the user (WAITING_STATUSES fix).
+    cs_mod.mark_batch(["advancedbackgroundchecks"], "awaiting-confirmation")
+    refreshed_cases = cs_mod.list_cases()
+    refreshed_session_items = aq_mod.build_session(refreshed_cases, brokers_data)
+    if any(it for it in refreshed_session_items if "advancedbackgroundchecks" in it["covers"]):
+        result.fail(
+            "build_session() over the refreshed store excludes a case just moved to "
+            "awaiting-confirmation via mark_batch",
+            f"session items: {refreshed_session_items}",
+        )
+    refreshed_queue_items = aq_mod.build_queue(refreshed_cases, brokers_data)
+    if any(it for it in refreshed_queue_items if "advancedbackgroundchecks" in it["covers"]):
+        result.fail(
+            "build_queue() over the refreshed store excludes a case just moved to awaiting-confirmation via mark_batch",
+            f"queue items: {refreshed_queue_items}",
+        )
+
+
 def run_eval_06_action_queue(verbose: bool) -> EvalResult:
     """
     Action queue: owner-group collapse, mechanism-rank ordering, deterministic
-    numbering across repeated runs, and status-based selection.
+    numbering across repeated runs, and status-based selection. Also covers
+    the CAPTCHA batch solve-session view (build_session()/
+    render_session_markdown()) and case_store.py's mark_batch(), reusing this
+    eval's temp store and seeded cases.
     """
-    result = EvalResult("eval-06", "Action queue: collapse, ranking, determinism", release_blocking=False)
+    result = EvalResult(
+        "eval-06", "Action queue: collapse, ranking, determinism, solve-session, mark-batch", release_blocking=False
+    )
 
     brokers_data = aq_mod._load_brokers()
     owner_groups = brokers_data.get("owner_groups", {})
@@ -562,53 +730,7 @@ def run_eval_06_action_queue(verbose: bool) -> EvalResult:
         cs_mod.CASE_STORE_PATH = Path(_tmpstore(tmp_dir))
         cs_mod.mark_affirmation()  # SAFE-1: required before the 'submitted' transitions below
 
-        # Two cases in the same owner group -> must collapse to one item.
-        cs_mod.upsert(
-            {
-                "broker_id": member_a,
-                "status": "awaiting-user",
-                "created_at": _now(),
-                "human_action_required": f"Complete opt-out for {member_a}.",
-            }
-        )
-        cs_mod.upsert(
-            {
-                "broker_id": member_b,
-                "status": "awaiting-user",
-                "created_at": _now(),
-                "human_action_required": f"Complete opt-out for {member_b}.",
-            }
-        )
-
-        # A captcha case — must rank before phone-verification.
-        cs_mod.upsert(
-            {
-                "broker_id": "advancedbackgroundchecks",
-                "status": "awaiting-user",
-                "created_at": _now(),
-                "mechanism": "captcha-handoff",
-                "human_action_required": "Solve CAPTCHA and click Submit.",
-            }
-        )
-
-        # A phone-verification case.
-        cs_mod.upsert(
-            {
-                "broker_id": "411-com",
-                "status": "awaiting-user",
-                "created_at": _now(),
-                "mechanism": "phone-verification",
-                "human_action_required": "Enter the code sent to your phone.",
-            }
-        )
-
-        # Excluded: submitted-and-waiting, and terminal (confirmed-removed).
-        cs_mod.upsert({"broker_id": "whitepages", "status": "discovered", "created_at": _now()})
-        cs_mod.mark("whitepages", "submitted")
-
-        cs_mod.upsert({"broker_id": "infotracer", "status": "discovered", "created_at": _now()})
-        cs_mod.mark("infotracer", "submitted")
-        cs_mod.mark("infotracer", "confirmed-removed")
+        _seed_action_queue_cases(member_a, member_b)
 
         # Two independent runs against the unchanged store must be byte-identical.
         items_1 = aq_mod.build_queue(cs_mod.list_cases(), brokers_data)
@@ -647,6 +769,8 @@ def run_eval_06_action_queue(verbose: bool) -> EvalResult:
                 "captcha item is numbered before the phone-verification item (mechanism ranking)",
                 f"captcha number={captcha_item['number']}, phone number={phone_item['number']}",
             )
+
+        _check_session_and_mark_batch(result, brokers_data, member_a, member_b, verbose)
 
     # Empty store -> friendly message, exit 0, no crash.
     with tempfile.TemporaryDirectory() as tmp_dir2:
@@ -1267,6 +1391,176 @@ def run_eval_10_privacy_link_extraction(verbose: bool) -> EvalResult:
     return result
 
 
+def _check_url_guard_own_domain(result: EvalResult, url_guard_mod, data: dict, verbose: bool) -> None:
+    """1 & 2: whitepages' own stored opt-out URL, and a subdomain of the same registrable domain, are in scope."""
+    whitepages = next((b for b in data["brokers"] if b["id"] == "whitepages"), None)
+    if whitepages is None:
+        result.fail("whitepages present in data/brokers.json", "not found")
+        return
+
+    stored_verdict = url_guard_mod.check("whitepages", whitepages["opt_out_url"], data)
+    if verbose:
+        print(f"  whitepages stored-url verdict: {stored_verdict}")
+    if not stored_verdict["in_scope"]:
+        result.fail("whitepages' own opt_out_url is in_scope", str(stored_verdict))
+
+    subdomain_verdict = url_guard_mod.check("whitepages", "https://sub.whitepages.com/x", data)
+    if verbose:
+        print(f"  whitepages subdomain verdict: {subdomain_verdict}")
+    if not subdomain_verdict["in_scope"]:
+        result.fail("a subdomain of whitepages.com is in_scope", str(subdomain_verdict))
+
+
+def _check_url_guard_cross_domain(result: EvalResult, url_guard_mod, data: dict, verbose: bool) -> None:
+    """3: 411-com's opt_out_url legitimately lives on whitepages.com, a different broker's domain."""
+    cross_domain_verdict = url_guard_mod.check("411-com", "https://www.whitepages.com/suppression-requests", data)
+    if verbose:
+        print(f"  411-com cross-domain verdict: {cross_domain_verdict}")
+    if not cross_domain_verdict["in_scope"]:
+        result.fail("411-com's opt_out_url on whitepages.com is in_scope", str(cross_domain_verdict))
+
+
+def _check_url_guard_rejections(result: EvalResult, url_guard_mod, data: dict, verbose: bool) -> None:
+    """4-7: lookalike domain, http:// downgrade, javascript:, and the userinfo trick are all rejected."""
+    lookalike_verdict = url_guard_mod.check("spokeo", "https://spokeo-optout.evil.com/form", data)
+    if verbose:
+        print(f"  spokeo lookalike verdict: {lookalike_verdict}")
+    if lookalike_verdict["in_scope"] or lookalike_verdict["reason"] != "off_domain":
+        result.fail("a lookalike domain is rejected with reason off_domain", str(lookalike_verdict))
+
+    downgrade_verdict = url_guard_mod.check("whitepages", "http://www.whitepages.com/suppression-requests", data)
+    if verbose:
+        print(f"  http downgrade verdict: {downgrade_verdict}")
+    if downgrade_verdict["in_scope"] or downgrade_verdict["reason"] != "disallowed_scheme":
+        result.fail("http:// is rejected with reason disallowed_scheme", str(downgrade_verdict))
+
+    js_verdict = url_guard_mod.check("whitepages", "javascript:alert(1)", data)
+    if verbose:
+        print(f"  javascript: verdict: {js_verdict}")
+    if js_verdict["in_scope"] or js_verdict["reason"] != "disallowed_scheme":
+        result.fail("javascript: is rejected with reason disallowed_scheme", str(js_verdict))
+
+    # userinfo trick rejected UNCONDITIONALLY, even though the resolved host
+    # is a legitimate whitepages.com address.
+    userinfo_verdict = url_guard_mod.check("whitepages", "https://evil.com@www.whitepages.com/", data)
+    if verbose:
+        print(f"  userinfo-trick verdict: {userinfo_verdict}")
+    if userinfo_verdict["in_scope"] or userinfo_verdict["reason"] != "userinfo_present":
+        result.fail("a userinfo-trick URL is rejected with reason userinfo_present", str(userinfo_verdict))
+
+
+def _check_url_guard_synthetic_allowed_domains(result: EvalResult, url_guard_mod, verbose: bool) -> None:
+    """8: a synthetic broker's explicit allowed_domains entry extends its allowlist."""
+    synthetic_data = {
+        "brokers": [
+            {
+                "id": "synthetic-broker",
+                "homepage": "https://synthetic-broker.example",
+                "opt_out_url": "https://synthetic-broker.example/optout",
+                "allowed_domains": ["extra-partner.example"],
+            }
+        ],
+        "owner_groups": {},
+    }
+    allowed = url_guard_mod.allowed_domains_for_broker("synthetic-broker", synthetic_data)
+    if verbose:
+        print(f"  synthetic-broker allowed_domains: {allowed}")
+    if "extra-partner.example" not in allowed:
+        result.fail("allowed_domains_for_broker includes an explicit allowed_domains entry", str(allowed))
+
+    extra_partner_verdict = url_guard_mod.check(
+        "synthetic-broker", "https://portal.extra-partner.example/form", synthetic_data
+    )
+    if verbose:
+        print(f"  extra-partner verdict: {extra_partner_verdict}")
+    if not extra_partner_verdict["in_scope"]:
+        result.fail("a URL on an explicit allowed_domains entry is in_scope", str(extra_partner_verdict))
+
+
+def _check_url_guard_registrable_domain_units(result: EvalResult, url_guard_mod, verbose: bool) -> None:
+    """9: registrable_domain() unit heuristics."""
+    plain_domain = url_guard_mod.registrable_domain("www.spokeo.com")
+    if verbose:
+        print(f"  registrable_domain('www.spokeo.com') -> {plain_domain}")
+    if plain_domain != "spokeo.com":
+        result.fail("registrable_domain('www.spokeo.com') == 'spokeo.com'", f"got {plain_domain!r}")
+
+    suffix_domain = url_guard_mod.registrable_domain("a.b.example.co.uk")
+    if verbose:
+        print(f"  registrable_domain('a.b.example.co.uk') -> {suffix_domain}")
+    if suffix_domain != "example.co.uk":
+        result.fail("registrable_domain('a.b.example.co.uk') == 'example.co.uk'", f"got {suffix_domain!r}")
+
+
+def _check_url_guard_verify_url_candidate_filter(result: EvalResult, url_guard_mod, verbose: bool) -> None:
+    """
+    10: verify_url.py's candidate-filtering seam, exercised directly and
+    entirely offline. _find_privacy_link resolves each candidate href with
+    urljoin against the homepage and checks it with url_guard.check BEFORE
+    making any HTTP request; no HTTP request may fire in this eval, so this
+    calls url_guard.check on the same urljoin'd candidates _find_privacy_link
+    would produce, rather than invoking _check_url with a live URL.
+    """
+    from urllib.parse import urljoin  # noqa: PLC0415
+
+    fake_broker_data = {
+        "brokers": [
+            {
+                "id": "fakebroker",
+                "homepage": "https://broker.example",
+                "opt_out_url": "https://broker.example/optout",
+            }
+        ],
+        "owner_groups": {},
+    }
+    homepage = "https://broker.example"
+    off_scope_candidate = urljoin(homepage, "https://attacker.example/steal")
+    in_scope_candidate = urljoin(homepage, "/privacy/optout")
+
+    off_scope_verdict = url_guard_mod.check("fakebroker", off_scope_candidate, fake_broker_data)
+    in_scope_verdict = url_guard_mod.check("fakebroker", in_scope_candidate, fake_broker_data)
+    if verbose:
+        print(f"  off-scope candidate ({off_scope_candidate}) verdict: {off_scope_verdict}")
+        print(f"  in-scope candidate ({in_scope_candidate}) verdict: {in_scope_verdict}")
+
+    if off_scope_verdict["in_scope"]:
+        result.fail(
+            "_find_privacy_link's url_guard.check pre-filter rejects an off-scope candidate href",
+            str(off_scope_verdict),
+        )
+    if not in_scope_verdict["in_scope"]:
+        result.fail(
+            "_find_privacy_link's url_guard.check pre-filter accepts an in-scope candidate href",
+            str(in_scope_verdict),
+        )
+
+
+def run_eval_11_url_guard(verbose: bool) -> EvalResult:
+    """
+    SAFE-4 URL guard: domain-scope verdicts, entirely offline (no network
+    calls anywhere in this eval, ever). Exercises url_guard.check /
+    allowed_domains_for_broker / registrable_domain against the REAL
+    data/brokers.json for realistic broker ids and domains, a synthetic
+    registry for the allowed_domains-extension case, and verify_url.py's
+    pure candidate-filtering seam (the url_guard.check pre-filter
+    _find_privacy_link runs against each urljoin'd candidate BEFORE any HTTP
+    request) exercised directly, with zero HTTP requests anywhere.
+    """
+    import url_guard as url_guard_mod  # noqa: PLC0415
+
+    result = EvalResult("eval-11", "URL guard: SAFE-4 domain-scope verdicts (offline)", release_blocking=False)
+    data = discover_mod._load_brokers()
+
+    _check_url_guard_own_domain(result, url_guard_mod, data, verbose)
+    _check_url_guard_cross_domain(result, url_guard_mod, data, verbose)
+    _check_url_guard_rejections(result, url_guard_mod, data, verbose)
+    _check_url_guard_synthetic_allowed_domains(result, url_guard_mod, verbose)
+    _check_url_guard_registrable_domain_units(result, url_guard_mod, verbose)
+    _check_url_guard_verify_url_candidate_filter(result, url_guard_mod, verbose)
+
+    return result
+
+
 EVAL_RUNNERS = {
     "eval-01-discovery": run_eval_01_discovery,
     "eval-02-mechanism-routing": run_eval_02_mechanism_routing,
@@ -1278,6 +1572,7 @@ EVAL_RUNNERS = {
     "eval-08-monitoring-refile": run_eval_08_monitoring_refile,
     "eval-09-email-rendering": run_eval_09_email_rendering,
     "eval-10-privacy-link-extraction": run_eval_10_privacy_link_extraction,
+    "eval-11-url-guard": run_eval_11_url_guard,
 }
 
 

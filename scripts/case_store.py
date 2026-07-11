@@ -210,6 +210,39 @@ def mark(broker_id: str, status: str, note: Optional[str] = None, actor: str = "
     return upsert(patch)
 
 
+def mark_batch(broker_ids: list, status: str, note: Optional[str] = None, actor: str = "user") -> dict:
+    """
+    Thin loop over mark() for recording a batch of completions in one call —
+    the CAPTCHA solve-session flow (references/mechanisms/captcha-handoff.md)
+    records however many items the user finished in a single command instead
+    of one `mark` invocation per broker.
+
+    Default actor="user" (not mark()'s "agent" default): batch completion is
+    user-reported after a solve session — the user tells the agent which
+    numbers they finished, so the audit log should show the user, not the
+    agent, performed the transition.
+
+    Because this is a thin loop over mark(), the SAFE-1 affirmation gate and
+    the confirmed-removed idempotency guard (both enforced inside upsert())
+    apply per-broker exactly as they do for a single mark() call, and neither
+    one raises: a gate-blocked or idempotency-blocked transition makes mark()
+    return the existing record unchanged (with a warning printed to stderr),
+    so it lands in "succeeded" with its status unchanged — consistent with
+    single-mark() behavior, not an error condition of mark_batch() itself.
+    Only a broker_id with no case on record raises (mark()'s ValueError),
+    and only those land in "failed".
+    """
+    succeeded = []
+    failed = []
+    for broker_id in broker_ids:
+        try:
+            record = mark(broker_id, status, note=note, actor=actor)
+            succeeded.append(record)
+        except ValueError as e:
+            failed.append({"broker_id": broker_id, "error": str(e)})
+    return {"succeeded": succeeded, "failed": failed}
+
+
 def list_cases(status: Optional[str] = None) -> list:
     """Return all cases, optionally filtered by status."""
     store = _load_store()
@@ -229,6 +262,15 @@ def purge(confirm: bool = False) -> None:
         print(f"Purged {CASE_STORE_PATH}")
     else:
         print("Nothing to purge.")
+
+
+def _handle_mark_batch_cli(broker_ids_arg: str, status: str, note: Optional[str], actor: str) -> None:
+    """CLI handler for `mark-batch`, split out of main() to keep its statement count down."""
+    broker_ids = [b.strip() for b in broker_ids_arg.split(",") if b.strip()]
+    batch_result = mark_batch(broker_ids, status, note=note, actor=actor)
+    print(json.dumps(batch_result, indent=2))
+    if batch_result["failed"]:
+        sys.exit(1)
 
 
 def main() -> None:
@@ -252,6 +294,12 @@ def main() -> None:
     p_mark.add_argument("--status", required=True, choices=STATUS_ORDER)
     p_mark.add_argument("--note")
     p_mark.add_argument("--actor", default="agent", choices=["agent", "user"])
+
+    p_mark_batch = sub.add_parser("mark-batch", help="Update the status of several cases in one call")
+    p_mark_batch.add_argument("--broker-ids", required=True, help="Comma-separated broker ids")
+    p_mark_batch.add_argument("--status", required=True, choices=STATUS_ORDER)
+    p_mark_batch.add_argument("--note")
+    p_mark_batch.add_argument("--actor", default="user", choices=["agent", "user"])
 
     p_list = sub.add_parser("list", help="List all cases (optionally filtered by status)")
     p_list.add_argument("--status", choices=STATUS_ORDER)
@@ -279,6 +327,9 @@ def main() -> None:
     elif args.command == "mark":
         result = mark(args.broker_id, args.status, note=args.note, actor=args.actor)
         print(json.dumps(result, indent=2))
+
+    elif args.command == "mark-batch":
+        _handle_mark_batch_cli(args.broker_ids, args.status, args.note, args.actor)
 
     elif args.command == "list":
         cases = list_cases(status=args.status)

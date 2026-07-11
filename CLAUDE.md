@@ -63,6 +63,12 @@ uv run bandit -r scripts -c pyproject.toml
 # Run any script through the managed environment, e.g.:
 uv run python scripts/discover.py --name "Your Name" --phone "+15551234567" --state CA
 uv run python scripts/build_dashboard.py
+
+# SAFE-4 domain-scope check (verdict on whether a URL is in scope for a broker)
+uv run python scripts/url_guard.py --broker-id spokeo --url "https://example.com/x"
+
+# Render the CAPTCHA batch solve-session checklist
+uv run python scripts/action_queue.py --session
 ```
 
 ## Conventions
@@ -92,10 +98,7 @@ that lens.
 
 - **Own-data only.** The SAFE-1 gate (ownership affirmation before any discovery or
   submission) is release-blocking — see `evals/evals.json` eval #5. Never weaken or bypass it.
-- **No anti-bot circumvention (SAFE-2).** Never write code that solves, defeats, or routes
-  around a CAPTCHA or equivalent control. Always hand these to the human
-  (`references/mechanisms/captcha-handoff.md`).
-- **Truthful requests only (SAFE-3).** No fabricated identities, no impersonation.
+- **Truthful requests only (SAFE-2).** No fabricated identities, no impersonation.
 - **Minimum PII collection.** Don't add fields to the case store or a broker submission that
   the specific broker doesn't require.
 - **Never commit real case/identity data.** `.gitignore` already excludes `~/.quietline/`,

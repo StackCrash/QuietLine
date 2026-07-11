@@ -1,5 +1,5 @@
 {
-  "description": "QuietLine eval harness \u2014 10 test cases covering correctness, idempotency, deadline logic, the SAFE-1 safety gate, the human-action queue, confirmation-email classification, the reappeared/refile monitoring flow (including the rescan.py --apply orchestration end to end), email-template rendering across jurisdictions, and offline privacy-link extraction from broker homepage HTML.",
+  "description": "QuietLine eval harness \u2014 11 test cases covering correctness, idempotency, deadline logic, the SAFE-1 safety gate, the human-action queue (including the CAPTCHA batch solve-session view and case_store.py's mark_batch()), confirmation-email classification, the reappeared/refile monitoring flow (including the rescan.py --apply orchestration end to end), email-template rendering across jurisdictions, offline privacy-link extraction from broker homepage HTML, and the SAFE-4 url_guard.py domain-scope gate (offline, per-broker allowlist verdicts before any PII entry or confirmation-link click).",
   "schema_version": "1.0",
   "notes": "Run with: python evals/run_evals.py. Eval #5 (safety) is a hard gate \u2014 non-zero exit if it fails.",
   "evals": [
@@ -218,9 +218,9 @@
     },
     {
       "id": "eval-06-action-queue",
-      "name": "Action queue: owner-group collapse, mechanism ranking, determinism",
-      "description": "scripts/action_queue.py selects awaiting-user cases (plus any non-terminal, non-submitted case carrying a human_action_required), collapses cases whose broker_ids share a data/brokers.json owner_groups entry into one queue item, orders sections by mechanism rank (captcha-handoff, phone-verification, id-upload, account-required, then everything else), and numbers items sequentially and deterministically. Seeds a temp store (never production data) with two awaiting-user cases in the same owner group (the first group in data/brokers.json with >= 2 members, loaded dynamically — not hardcoded), one awaiting-user captcha case, one awaiting-user phone-verification case, one submitted case, and one confirmed-removed case.",
-      "script": "action_queue.py",
+      "name": "Action queue: owner-group collapse, mechanism ranking, determinism, CAPTCHA solve-session, mark-batch",
+      "description": "scripts/action_queue.py selects awaiting-user cases (plus any non-terminal case carrying a human_action_required that isn't waiting on the broker — i.e. not 'submitted' or 'awaiting-confirmation'), collapses cases whose broker_ids share a data/brokers.json owner_groups entry into one queue item, orders sections by mechanism rank (captcha-handoff, phone-verification, id-upload, account-required, then everything else), and numbers items sequentially and deterministically. Also covers build_session()/render_session_markdown() (the CAPTCHA batch solve-session view: only captcha-handoff items, renumbered 1..N independently of the full queue, each carrying a links list and a tab_hint) and scripts/case_store.py's mark_batch() (records several status transitions in one call, inheriting the SAFE-1 gate and idempotency guard unchanged from mark()). Also regression-tests that a case moved to awaiting-confirmation via mark_batch no longer reappears in a rebuilt queue/session even though its human_action_required note is still attached. Seeds a temp store (never production data) with two awaiting-user cases in the same owner group (the first group in data/brokers.json with >= 2 members, loaded dynamically — not hardcoded), one awaiting-user captcha case, one awaiting-user phone-verification case, one submitted case, and one confirmed-removed case.",
+      "script": "action_queue.py, case_store.py",
       "assertions": [
         {
           "description": "The captcha item is numbered before the phone-verification item (mechanism ranking)",
@@ -241,6 +241,26 @@
         {
           "description": "An empty case store renders a friendly 'nothing needs your attention' message and exits 0",
           "check": "'Nothing needs your attention' in render_markdown(build_queue([], brokers_data))"
+        },
+        {
+          "description": "build_session() returns only captcha-handoff items, renumbered from 1 with tab hints, each carrying a links list of {broker_id, url} entries",
+          "check": "all(it['mechanism'] == 'captcha-handoff' for it in session_items) and session_items[0]['number'] == 1 and session_items[0]['tab_hint'] == 'Tab 1' and all({'broker_id', 'url'}.issubset(link.keys()) for it in session_items for link in it['links'])"
+        },
+        {
+          "description": "render_session_markdown() renders a checkbox line with the expected broker title, and an empty session renders the empty-state message",
+          "check": "'- [ ]' in render_session_markdown(session_items) and expected_title in render_session_markdown(session_items) and 'Nothing needs a CAPTCHA solve' in render_session_markdown([])"
+        },
+        {
+          "description": "mark_batch() on two seeded awaiting-user broker ids moves both to awaiting-confirmation with actor == 'user' on the latest audit_log entry",
+          "check": "all(get(bid)['status'] == 'awaiting-confirmation' and get(bid)['audit_log'][-1]['actor'] == 'user' for bid in [member_a, member_b])"
+        },
+        {
+          "description": "mark_batch() on a confirmed-removed broker id leaves its status unchanged (idempotency guard holds through the batch path, landing in 'succeeded' per mark()'s no-raise contract)",
+          "check": "get('infotracer')['status'] == 'confirmed-removed'"
+        },
+        {
+          "description": "After mark_batch moves the captcha case to awaiting-confirmation, build_session()/build_queue() rebuilt from the refreshed store no longer include it, even though its human_action_required note is still attached (WAITING_STATUSES regression check)",
+          "check": "'advancedbackgroundchecks' not in {bid for it in build_session(refreshed_cases, brokers_data) for bid in it['covers']} and 'advancedbackgroundchecks' not in {bid for it in build_queue(refreshed_cases, brokers_data) for bid in it['covers']}"
         }
       ],
       "release_blocking": false
@@ -412,6 +432,47 @@
         {
           "description": "extract_links/match_privacy_links never raise on malformed HTML (unclosed anchor, stray closing tag)",
           "check": "no exception raised"
+        }
+      ],
+      "release_blocking": false
+    },
+    {
+      "id": "eval-11-url-guard",
+      "name": "URL guard: SAFE-4 domain-scope verdicts (offline)",
+      "description": "scripts/url_guard.py is the SAFE-4 verified-navigation gate: before entering PII or clicking submit, and before opening a confirmation-email link, the browsing agent checks the current/candidate URL against a per-broker domain allowlist derived from data/brokers.json (homepage, opt_out_url, the broker's owner group's centralized_opt_out_url if any, and any broker-specific allowed_domains). Entirely offline (stdlib only, no network). Covers: a broker's own stored opt-out URL and a subdomain of it both pass; a broker whose opt_out_url legitimately lives on a different (but allowlisted) domain passes; a lookalike/typosquat domain is rejected with reason off_domain; a scheme downgrade to http:// and a javascript: URL are both rejected with reason disallowed_scheme; a userinfo-trick URL (https://evil.com@realhost/) is rejected with reason userinfo_present even though its resolved host is legitimate; a synthetic broker with an explicit allowed_domains entry extends the allowlist; registrable_domain() unit-level heuristics for a plain two-label host and a TWO_PART_SUFFIXES-listed host (co.uk); and verify_url.py's candidate-filtering seam (_find_privacy_link's use of url_guard.check before any HTTP request) is exercised without ever making a real network call.",
+      "script": "url_guard.py",
+      "assertions": [
+        {
+          "description": "A broker's own stored opt-out URL, and a subdomain of the same registrable domain, are in scope",
+          "check": "check(broker_id, stored_opt_out_url, data)['in_scope'] and check(broker_id, 'https://sub.' + domain + '/x', data)['in_scope']"
+        },
+        {
+          "description": "A broker whose opt_out_url legitimately lives on a different but allowlisted domain (e.g. 411.com's Whitepages suppression page) is in scope",
+          "check": "check('411-com', 'https://www.whitepages.com/suppression-requests', data)['in_scope']"
+        },
+        {
+          "description": "A lookalike/typosquat domain is rejected with reason off_domain",
+          "check": "check('spokeo', 'https://spokeo-optout.evil.com/form', data) == {'in_scope': False, 'reason': 'off_domain'}"
+        },
+        {
+          "description": "http:// (scheme downgrade) and javascript: URLs are both rejected with reason disallowed_scheme",
+          "check": "check(broker_id, 'http://...', data)['reason'] == 'disallowed_scheme' and check(broker_id, 'javascript:alert(1)', data)['reason'] == 'disallowed_scheme'"
+        },
+        {
+          "description": "A userinfo-trick URL is rejected unconditionally with reason userinfo_present, even though the resolved host is legitimate",
+          "check": "check('whitepages', 'https://evil.com@www.whitepages.com/', data) == {'in_scope': False, 'reason': 'userinfo_present'}"
+        },
+        {
+          "description": "A synthetic broker's explicit allowed_domains entry extends the allowlist and passes a matching URL",
+          "check": "'extra-partner.example' in allowed_domains_for_broker(broker_id, synthetic_data) and check(broker_id, 'https://portal.extra-partner.example/form', synthetic_data)['in_scope']"
+        },
+        {
+          "description": "registrable_domain() unit heuristics: a plain two-label host and a TWO_PART_SUFFIXES-listed multi-part host",
+          "check": "registrable_domain('www.spokeo.com') == 'spokeo.com' and registrable_domain('a.b.example.co.uk') == 'example.co.uk'"
+        },
+        {
+          "description": "verify_url.py's candidate-filtering seam skips an off-scope homepage link and keeps an in-scope one, with zero HTTP requests made",
+          "check": "url_guard.check(broker_id, off_scope_candidate, data)['in_scope'] is False and url_guard.check(broker_id, in_scope_candidate, data)['in_scope'] is True"
         }
       ],
       "release_blocking": false

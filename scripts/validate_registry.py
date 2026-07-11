@@ -135,6 +135,33 @@ def _check_broker(broker: Any, idx: int) -> list[str]:
                 "with a non-empty opt_out_email"
             )
 
+    errors.extend(_check_allowed_domains(broker, label))
+
+    return errors
+
+
+def _check_allowed_domains(broker: Any, label: str) -> list[str]:
+    """
+    Validate the optional per-broker "allowed_domains" field (see
+    scripts/url_guard.py's allowed_domains_for_broker): if present, it must
+    be a list of non-empty bare-domain strings (no "://" — these are
+    domains, not URLs).
+    """
+    errors: list[str] = []
+    if "allowed_domains" not in broker:
+        return errors
+
+    allowed_domains = broker["allowed_domains"]
+    if not isinstance(allowed_domains, list):
+        errors.append(f"{label}: field 'allowed_domains' must be a list")
+        return errors
+
+    for idx, entry in enumerate(allowed_domains):
+        if not (isinstance(entry, str) and entry):
+            errors.append(f"{label}: allowed_domains[{idx}] must be a non-empty string")
+        elif "://" in entry:
+            errors.append(f"{label}: allowed_domains[{idx}] must be a bare domain, not a URL (found '://')")
+
     return errors
 
 

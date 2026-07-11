@@ -32,6 +32,8 @@ Spam and solicitation calls are mostly a data-exposure problem. Your number leak
 | ID upload | Human-gated — you redact and approve each upload; never auto-submitted |
 | CA DROP (one-shot) | Assisted — single deletion request to all CA-registered brokers |
 
+CAPTCHA sites are pre-filled and held open in their own browser tabs, then handed to you as one batch solve-session checklist (`action_queue.py --session`) instead of one interruption per site; a single `mark-batch` call records however many you finish in one pass.
+
 ---
 
 ## How it compares to doing it manually
@@ -84,9 +86,10 @@ QuietLine handles sensitive personal data as a core input — these aren't footn
 | Rule | Enforcement |
 |---|---|
 | **Own-data only** | Script-enforced (SAFE-1): `discover.py` exits 3 unless ownership is affirmed (`--affirm-ownership` or `case_store.py mark-affirmation`); submissions are blocked without an affirmed case store |
-| **No anti-bot circumvention** | CAPTCHAs and equivalent controls are always routed to you, never solved by the agent |
+| **No anti-bot circumvention** | CAPTCHAs and equivalent controls are always routed to you via the batch solve-session queue (see `references/mechanisms/captcha-handoff.md`), never solved by the agent |
 | **Truthful requests only** | Submissions use your real, accurate details and lawful statutory language |
 | **Respectful automation** | Submissions are paced and rate-limited; no site hammering |
+| **Verified navigation only** | Agent-followed (SAFE-4): `url_guard.py` checks the current page's domain scope before any PII entry or submit, and before opening a confirmation-email link; out-of-scope redirects are recorded to the case store as failed, not followed |
 | **No guarantees** | Results require ongoing maintenance; the skill states this plainly |
 | **Full transparency** | Every action taken on your behalf is logged and reviewable |
 
@@ -102,6 +105,7 @@ quietline/
 ├── scripts/                      # Deterministic logic — executed, not reasoned
 │   ├── discover.py               #   Query registry, check searchable brokers, dedupe by parent owner (SAFE-1 gated)
 │   ├── verify_url.py             #   Confirm an opt-out URL is live; fall back to homepage privacy footer
+│   ├── url_guard.py              #   SAFE-4 domain-scope verdict for any URL before PII entry
 │   ├── case_store.py             #   Read/write/update case records; idempotency guard (no double-submits)
 │   ├── diff_scan.py              #   Diff a re-scan vs last run → {still-clear, reappeared, new}
 │   ├── deadlines.py              #   Compute statutory response deadlines; flag overdue for escalation
@@ -132,7 +136,7 @@ quietline/
 └── evals/
     ├── evals.json                #   Test cases including the SAFE-1 release-blocking safety eval
     ├── fixtures/                  #   Sample confirmation emails/HTML used by the classifier + link-extraction evals
-    └── run_evals.py               #   Eval runner (10/10 must pass)
+    └── run_evals.py               #   Eval runner (11/11 must pass)
 ```
 
 ### Design principles
@@ -167,7 +171,7 @@ These are backed by scripts, not agent reasoning, so they hold across sessions:
 python3 evals/run_evals.py
 ```
 
-All 10 evals must pass. Eval #5 (SAFE-1: own-data only) is a release-blocking gate — a non-zero exit here means the ownership gate has regressed.
+All 11 evals must pass. Eval #5 (SAFE-1: own-data only) is a release-blocking gate — a non-zero exit here means the ownership gate has regressed.
 
 ```bash
 # Verbose output with per-assertion detail

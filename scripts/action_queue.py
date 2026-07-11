@@ -32,7 +32,10 @@ sys.path.insert(0, str(Path(__file__).parent))
 BROKERS_PATH = Path(__file__).parent.parent / "data" / "brokers.json"
 
 TERMINAL_STATUSES = {"confirmed-removed"}
-WAITING_STATUSES = {"submitted"}
+# Statuses where the case is waiting on the BROKER (a submission or a batch
+# solve-session completion already recorded), not on the user — excluded from
+# is_selected() even if a stale human_action_required note is still attached.
+WAITING_STATUSES = {"submitted", "awaiting-confirmation"}
 
 # Mechanism rank: sections are ordered captcha-handoff, phone-verification,
 # id-upload, account-required, then everything else (web-form, email-request,
@@ -62,6 +65,14 @@ DEFAULT_INSTRUCTIONS = {
 }
 DEFAULT_INSTRUCTION_FALLBACK = "Complete the pending step on the broker's site, then let the agent know."
 
+# Mirrors the DEFAULT_INSTRUCTIONS pattern above: per-mechanism "what to
+# expect after you submit" note shown on each CAPTCHA solve-session checklist
+# line (see render_session_markdown()).
+EXPECTED_CONFIRMATION_NOTES = {
+    "captcha-handoff": "A confirmation email should arrive within a few minutes of submitting.",
+}
+EXPECTED_CONFIRMATION_FALLBACK = "Watch for a confirmation email from the broker after submitting."
+
 
 def _load_brokers() -> dict:
     with open(BROKERS_PATH) as f:
@@ -81,9 +92,13 @@ def is_selected(case: dict, include_failed: bool = False) -> bool:
     Return True if this case belongs in the human-action queue.
 
     Selected: status == 'awaiting-user', OR a non-empty human_action_required
-    on a case whose status isn't terminal (confirmed-removed) or
-    submitted-and-waiting. 'failed' cases only qualify via the second branch
-    and only when --include-failed is passed.
+    on a case whose status isn't terminal (confirmed-removed) or waiting on
+    the broker (submitted, or awaiting-confirmation — e.g. just moved there
+    via mark-batch after a solve session). A case that still carries a stale
+    human_action_required note after moving to awaiting-confirmation must NOT
+    re-appear in the next queue/session render — it's waiting on the broker's
+    confirmation email now, not the user. 'failed' cases only qualify via the
+    second branch and only when --include-failed is passed.
     """
     status = case.get("status")
     if status == "awaiting-user":
@@ -112,6 +127,19 @@ def _determine_mechanism(case: dict, brokers_by_id: dict) -> str:
     return str(mechanism_type)
 
 
+def _link_for(case: dict, broker_id: str, brokers_by_id: dict) -> dict:
+    """A {broker_id, url} pair for the session view's 'links' field.
+
+    url prefers the case's own opt_out_url_used (the URL actually acted on)
+    and falls back to the registry's opt_out_url; either may be None
+    (e.g. an email-request broker with no URL) — the entry is included
+    regardless so every covered broker_id gets a links row.
+    """
+    broker = brokers_by_id.get(broker_id, {})
+    url = case.get("opt_out_url_used") or broker.get("opt_out_url")
+    return {"broker_id": broker_id, "url": url}
+
+
 def _build_single_item(case: dict, brokers_by_id: dict) -> dict:
     broker_id = case["broker_id"]
     mechanism = _determine_mechanism(case, brokers_by_id)
@@ -123,6 +151,10 @@ def _build_single_item(case: dict, brokers_by_id: dict) -> dict:
         "covers": [broker_id],
         "instruction": instruction,
         "sort_key": broker_id,
+        # Additive: one {broker_id, url} entry per covered broker. Existing
+        # keys above are unchanged, so the normal-queue render output this
+        # eval-06 asserts on is unaffected.
+        "links": [_link_for(case, broker_id, brokers_by_id)],
     }
 
 
@@ -141,6 +173,7 @@ def _build_group_item(group_key: str, members: list, group: dict, brokers_by_id:
         "covers": covers,
         "instruction": instruction,
         "sort_key": group_key,
+        "links": [_link_for(c, c["broker_id"], brokers_by_id) for c in members_sorted],
     }
 
 
@@ -189,6 +222,25 @@ def build_queue(cases: list, brokers_data: dict, include_failed: bool = False) -
     return items
 
 
+def build_session(cases: list, brokers_data: dict, mechanisms: frozenset = frozenset({"captcha-handoff"})) -> list:
+    """
+    Build the CAPTCHA batch solve-session view: the subset of build_queue()'s
+    items whose mechanism is in `mechanisms`, renumbered 1..N independently
+    of the full queue, each carrying a "tab_hint" for the pre-filled browser
+    tab it corresponds to.
+
+    Pure function, same testability pattern as build_queue(): takes an
+    already-loaded case list and brokers.json data, no I/O, deterministic
+    given the same inputs (see evals/run_evals.py eval-06).
+    """
+    items = build_queue(cases, brokers_data)
+    session_items = [dict(it) for it in items if it["mechanism"] in mechanisms]
+    for i, item in enumerate(session_items, start=1):
+        item["number"] = i
+        item["tab_hint"] = f"Tab {i}"
+    return session_items
+
+
 def render_markdown(items: list, limit: Optional[int] = None) -> str:
     if not items:
         return "# QuietLine — Action Queue\n\nNothing needs your attention right now. All caught up.\n"
@@ -215,6 +267,52 @@ def render_markdown(items: list, limit: Optional[int] = None) -> str:
         item_word = "item" if remaining == 1 else "items"
         lines.append(f"*{remaining} more {item_word} pending — raise --limit to see them.*")
         lines.append("")
+
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def render_session_markdown(items: list) -> str:
+    """
+    Render the CAPTCHA batch solve-session checklist: one line per pre-filled
+    browser tab, with its tab hint, per-broker link(s), instruction, and
+    expected-confirmation note, plus a footer showing the single mark-batch
+    command that records however many the user finished.
+
+    PII rule (same as render_markdown): broker names/URLs/instructions only —
+    never the user's name, phone, address, or DOB.
+    """
+    if not items:
+        return "# QuietLine — CAPTCHA Solve Session\n\nNothing needs a CAPTCHA solve right now. All caught up.\n"
+
+    total = len(items)
+    noun_verb = "pre-filled form is" if total == 1 else "pre-filled forms are"
+    lines = [
+        "# QuietLine — CAPTCHA Solve Session",
+        "",
+        f"{total} {noun_verb} waiting — each is open in its own browser tab. "
+        "Solve the CAPTCHA and click Submit on each, checking them off as you go.",
+        "",
+    ]
+
+    for item in items:
+        covers_note = f" (covers: {', '.join(item['covers'])})" if len(item["covers"]) > 1 else ""
+        lines.append(f"- [ ] {item['number']}. **{item['title']}**{covers_note} — {item['tab_hint']}")
+        for link in item.get("links", []):
+            if link.get("url"):
+                lines.append(f"  - {link['broker_id']}: {link['url']}")
+        lines.append(f"  - {item['instruction']}")
+        note = EXPECTED_CONFIRMATION_NOTES.get(item["mechanism"], EXPECTED_CONFIRMATION_FALLBACK)
+        lines.append(f"  - Expected: {note}")
+        lines.append("")
+
+    lines.append(
+        "When you're done (even partially), tell the agent which numbers you completed — it records them in one step:"
+    )
+    lines.append("")
+    lines.append("```bash")
+    lines.append("python scripts/case_store.py mark-batch --broker-ids <id1,id2,...> --status awaiting-confirmation")
+    lines.append("```")
+    lines.append("")
 
     return "\n".join(lines).rstrip() + "\n"
 
@@ -254,6 +352,11 @@ def main() -> None:
         action="store_true",
         help="Also include 'failed' cases that carry a pending human_action_required",
     )
+    parser.add_argument(
+        "--session",
+        action="store_true",
+        help="Render only CAPTCHA-handoff items as a batch solve-session checklist",
+    )
     args = parser.parse_args()
 
     if args.case_store:
@@ -267,12 +370,24 @@ def main() -> None:
 
     cases = cs.list_cases()
     brokers_data = _load_brokers()
-    items = build_queue(cases, brokers_data, include_failed=args.include_failed)
 
-    if args.output == "json":
-        print(render_json(items, limit=args.limit))
+    if args.session:
+        # --include-failed doesn't apply to the session view (a captcha-
+        # handoff item only ever gets here via awaiting-user in the first
+        # place) — ignored here rather than threaded through, to keep the
+        # session path simple.
+        items = build_session(cases, brokers_data)
+        shown = items[: args.limit] if args.limit else items
+        if args.output == "json":
+            print(render_json(shown))
+        else:
+            print(render_session_markdown(shown))
     else:
-        print(render_markdown(items, limit=args.limit))
+        items = build_queue(cases, brokers_data, include_failed=args.include_failed)
+        if args.output == "json":
+            print(render_json(items, limit=args.limit))
+        else:
+            print(render_markdown(items, limit=args.limit))
 
     sys.exit(0)
 

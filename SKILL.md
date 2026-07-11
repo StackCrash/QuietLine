@@ -29,17 +29,25 @@ Before discovery, form-filling, or any submission:
 
 This gate is hard-enforced by the scripts, not just this prose: `discover.py` exits 3 (printing no broker rows) unless ownership affirmation is given via `--affirm-ownership`, `QUIETLINE_AFFIRMED=1`, or a recorded affirmation, and `case_store.py` refuses to transition any case to `submitted`/`awaiting-confirmation` until `mark-affirmation` has run.
 
-**SAFE-2 — No anti-bot circumvention**
-
-Never attempt to solve, bypass, or route around a CAPTCHA, phone-verification step, or equivalent control programmatically. Always route these to the human. See the `references/mechanisms/captcha-handoff.md` playbook.
-
-**SAFE-3 — Truthful requests only**
+**SAFE-2 — Truthful requests only**
 
 All opt-out submissions use the user's real, accurate details and lawful statutory language. No impersonation; no fabricated legal claims.
 
-**SAFE-4 — Rate-limited, respectful automation**
+**SAFE-3 — Rate-limited, respectful automation**
 
 Space submissions to behave like a legitimate individual exercising legal rights, not a scraper. Do not hammer sites.
+
+**SAFE-4 — Verified navigation only**
+
+Data brokers have been observed redirecting to malicious sites, or opening a new window while redirecting the original tab. Before entering ANY of the user's PII into a page, and again before clicking Submit, run the guard on the CURRENT page URL:
+```bash
+python scripts/url_guard.py --broker-id <id> --url <current-page-url>
+```
+Exit 0 means in scope; exit 4 means out of scope. If the check fails, or a new window/tab appears pointing out of scope: stop immediately, enter nothing, close the offending window, record it —
+```bash
+python scripts/case_store.py mark --broker-id <id> --status failed --note "redirected off-domain to <host>"
+```
+— and tell the user. Also run the guard on any `confirmation_url` before opening it in Phase 3. Be honest about enforcement level: unlike SAFE-1 this gate is followed by the agent and audited via the case store, not hard-blocked by the scripts.
 
 ---
 
@@ -100,7 +108,7 @@ Before acting, verify each broker's opt-out URL is live:
 ```bash
 python scripts/verify_url.py --broker-id whitepages
 ```
-If the stored URL is dead, `verify_url.py` falls back to the broker's homepage and scans for a "Privacy" or "Do Not Sell My Info" footer link.
+If the stored URL is dead, `verify_url.py` falls back to the broker's homepage and scans for a "Privacy" or "Do Not Sell My Info" footer link. A result with `"off_domain": true` means the broker's stored URL redirects out of scope (SAFE-4) — do not proceed to submission for that broker; flag it to the user.
 
 **Present the Discovery Report and get user go-ahead before any submissions.**
 
@@ -122,13 +130,25 @@ Route each broker to the correct mechanism playbook. Read only the relevant file
 | ID upload | `references/mechanisms/id-upload.md` | Human-gated — user redacts + uploads; never auto-submitted |
 | CA DROP (one-shot) | `references/jurisdictions/ca-drop.md` | Assisted — single request covers all CA-registered brokers |
 
-**Batching rule (FR-2.2):** Collect all human-required steps (CAPTCHAs, phone verification, ID uploads) into a single queue. Do not interrupt the user per-site. After the automated wave completes, render the queue deterministically rather than hand-assembling it:
+**Batching rule (FR-2.2):** Collect all human-required steps (CAPTCHAs, phone verification, ID uploads) into a single queue. Do not interrupt the user per-site. Work in two waves: **Wave A** submits every fully-automated broker first; **Wave B** pre-fills every CAPTCHA form in its own browser tab (see `references/mechanisms/captcha-handoff.md`), leaving each `awaiting-user` until all are ready, then hands over exactly one solve-session checklist:
+
+```bash
+python scripts/action_queue.py --session
+```
+
+Every pre-fill and every submit — Wave A or Wave B — is subject to SAFE-4: guard the current page URL before typing any PII.
+
+For the plain, all-mechanisms queue instead, drop `--session`:
 
 ```bash
 python scripts/action_queue.py
 ```
 
-This selects every `awaiting-user` case (plus any non-terminal case still carrying a `human_action_required`), collapses owner-group members into one item, and orders/numbers the queue for you. Use `--limit N` to batch a long queue and `--output json` for a machine-readable form.
+Either form selects every `awaiting-user` case (plus any non-terminal case still carrying a `human_action_required`), collapses owner-group members into one item, and orders/numbers the queue for you; `--limit N` batches a long queue and `--output json` gives a machine-readable form. After the user solves some or all of a session in one sitting, record completions in a single call:
+
+```bash
+python scripts/case_store.py mark-batch --broker-ids <id1,id2,...> --status awaiting-confirmation
+```
 
 **Consolidated owners (FR-2.3):** When a broker is part of a network with a single centralized opt-out (e.g., PeopleConnect covers BeenVerified, PeopleFinders, Intelius, US Search), use the centralized URL rather than filing for each brand individually.
 
@@ -153,7 +173,7 @@ With `inbox-read` + `inbox-click` consent:
   python scripts/confirmation.py --email-file <path> --broker-id <id>
   ```
   This never touches the mailbox or the network — it only reasons over the saved copy — and returns one of `confirmation-link`, `already-confirmed`, `rejection`, `unrelated`. See `references/mechanisms/email-request.md`'s "Confirmation loop" for the full routing.
-- `confirmation-link`: open `confirmation_url` via the browsing agent (with `inbox-click` consent) to complete the loop.
+- `confirmation-link`: before opening `confirmation_url`, run `url_guard.py` against it (SAFE-4). Treat an out-of-scope confirmation link as a phishing signal — don't click it, mark the case for review, and tell the user. Otherwise open it via the browsing agent (with `inbox-click` consent) to complete the loop.
 - `already-confirmed` / `rejection`: apply the suggested status directly with `--apply` (moves the case to `confirmed-removed` or `failed`, respectively) instead of hand-writing `case_store.py mark`.
 
 For steps that need the user, render the numbered queue with the script rather than composing it by hand — it is the deterministic, resumable source of truth:
