@@ -1,0 +1,8 @@
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Synthetic test fixtures -- not real secrets"
+regexes = [
+  '''example\.com/optout/confirm\?token=abc123def456''',
+]
