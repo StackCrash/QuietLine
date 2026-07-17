@@ -17,7 +17,7 @@ dev = [
     "pytest-cov>=6.0",
     "pip-audit>=2.7",
     "bandit>=1.8",
-    "types-requests>=2.32",
+    "types-requests>=2.33.0.20260712",
     "types-jsonschema>=4.23",
 ]
 
